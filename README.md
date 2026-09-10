@@ -14,6 +14,7 @@ Static GitHub Pages application for matching a terminal yard inventory with a Ve
 - Uses a manual Short Steaming selector; `GEN_CARRIER` never assigns SS automatically.
 - Saves calculated history locally in IndexedDB. Uploaded source files are not stored.
 - Provides a print layout for saving the overview as PDF.
+- Bundles the pinned SheetJS Community Edition reader locally; no runtime CDN script handles uploaded files.
 
 ## Run locally
 
