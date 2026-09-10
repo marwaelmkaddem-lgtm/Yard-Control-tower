@@ -25,7 +25,7 @@ const elements = Object.fromEntries([
   "kpiGrid", "nvvScore", "nvvDistribution", "dwellChart", "blockChart", "categoryChart", "lineChart",
   "loadTypeChart", "loadSizeChart", "focusGrid", "nvvTabCount",
   "rehandleTabCount", "nvvSearch", "nvvFilter", "nvvTableBody", "nvvPagination", "rehandleSearch",
-  "rehandleFilter", "rehandleTableBody", "rehandlePagination", "qualityGrid", "historyTableBody",
+  "rehandleFilter", "rehandleTableBody", "rehandlePagination", "qualityGrid", "historySummary", "historyTableBody",
   "historyEmpty", "clearHistoryButton", "exportNvvButton", "exportRehandleButton", "printButton", "toast",
 ].map(id => [id, document.getElementById(id)]));
 
@@ -561,10 +561,21 @@ async function getHistory() {
 async function renderHistory() {
   try {
     const records = await getHistory();
+    const network = records.filter(record => !record.shortSteaming);
+    const shortSteaming = records.filter(record => record.shortSteaming);
+    const sumExceptions = items => items.reduce((total, record) => total + record.nvv.wrong + record.nvv.missing + record.nvv.notInYard, 0);
+    const summary = [
+      { label: "Network runs", value: network.length, note: "Short steaming excluded", tone: "neutral" },
+      { label: "Network exceptions", value: sumExceptions(network), note: "Across network runs only", tone: sumExceptions(network) ? "warning" : "success" },
+      { label: "Short steaming runs", value: shortSteaming.length, note: "Selected manually", tone: "neutral" },
+      { label: "SS exceptions", value: sumExceptions(shortSteaming), note: "Counted separately", tone: sumExceptions(shortSteaming) ? "warning" : "success" },
+    ];
+    elements.historySummary.innerHTML = summary.map(item => `<article class="kpi-card ${item.tone}"><span class="kpi-label">${escapeHtml(item.label)}</span><strong class="kpi-value">${formatNumber(item.value)}</strong><span class="kpi-note">${escapeHtml(item.note)}</span></article>`).join("");
     elements.historyEmpty.hidden = records.length > 0;
     elements.historyTableBody.innerHTML = records.map(record => `<tr><td>${escapeHtml(formatDate(record.planningDate))}</td><td><strong>${escapeHtml(record.terminal)}</strong></td><td>${escapeHtml(record.nvv.vessel.name)} · ${escapeHtml(record.nvv.vessel.visit)}</td><td>${record.shortSteaming ? '<span class="status-badge warning">Short steaming</span>' : '<span class="status-badge neutral">Network</span>'}</td><td>${formatNumber(record.nvv.wrong + record.nvv.missing + record.nvv.notInYard)}</td><td>${formatNumber(record.rehandles.count)}</td><td><button class="text-button" type="button" data-history-action="view" data-history-id="${escapeHtml(record.id)}">View</button> <button class="text-button" type="button" data-history-action="delete" data-history-id="${escapeHtml(record.id)}" style="color:var(--danger)">Delete</button></td></tr>`).join("");
   } catch (error) {
     console.warn(error);
+    elements.historySummary.innerHTML = "";
     elements.historyEmpty.hidden = false;
     elements.historyEmpty.textContent = "History is unavailable in this browser.";
   }
