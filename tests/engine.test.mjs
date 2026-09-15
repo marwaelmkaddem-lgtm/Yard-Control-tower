@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  analyzePlannerMoves,
   analyzeYard,
   buildAnalysis,
+  buildBatchAnalysis,
   calculateRehandles,
   crossCheckNvv,
   normalizeWiRows,
@@ -52,4 +54,53 @@ test("counts a later planned unit above an earlier load as one rehandle", () => 
 test("short steaming remains an explicit input", () => {
   const analysis = buildAnalysis({ yardRecords: yard, wiRecords: wi, terminal: "MAMED", planningDate: "2026-09-01", shortSteaming: false });
   assert.equal(analysis.shortSteaming, false);
+});
+
+test("planner moves aggregate by planner, move kind, size, and vessel", () => {
+  const secondWi = normalizeWiRows([
+    { Kind: "DSCH", "Container No.": "EEEE0000005", "Outbound Carrier": "VISIT2", "Outbound Carrier Name": "Second Vessel", Planner: "DEL055", Len: 20, Sts: "Empty" },
+    { Kind: "LOAD", "Container No.": "FFFF0000006", "Outbound Carrier": "VISIT2", "Outbound Carrier Name": "Second Vessel", Planner: "NEW001", Len: 45, Sts: "FCL" },
+  ]);
+  const result = analyzePlannerMoves([
+    { id: "vessel-1", fileName: "first.txt", wiRecords: wi, shortSteaming: false },
+    { id: "vessel-2", fileName: "second.txt", wiRecords: secondWi, shortSteaming: true },
+  ]);
+
+  assert.equal(result.totalMoves, 5);
+  assert.equal(result.networkMoves, 3);
+  assert.equal(result.shortSteamingMoves, 2);
+  assert.equal(result.vesselRows[1].name, "Second Vessel");
+  assert.equal(result.planners.find(row => row.planner === "DEL055").vesselCount, 1);
+  assert.equal(result.planners.find(row => row.planner === "NEW001").size45, 1);
+});
+
+test("batch analysis works without optional yard inventory", () => {
+  const analysis = buildBatchAnalysis({
+    vessels: [{ id: "vessel-1", fileName: "first.txt", wiRecords: wi, shortSteaming: true }],
+    yardRecords: [],
+    terminal: "MAMED",
+    planningDate: "2026-09-01",
+  });
+
+  assert.equal(analysis.yardAvailable, false);
+  assert.equal(analysis.planner.totalMoves, 3);
+  assert.equal(analysis.planner.shortSteamingMoves, 3);
+  assert.equal(analysis.yard, null);
+  assert.equal(analysis.nvv, null);
+  assert.equal(analysis.rehandles, null);
+});
+
+test("batch yard controls retain vessel-level NVV and rehandle results", () => {
+  const analysis = buildBatchAnalysis({
+    vessels: [{ id: "vessel-1", fileName: "first.txt", wiRecords: wi, shortSteaming: false }],
+    yardRecords: yard,
+    terminal: "MAMED",
+    planningDate: "2026-09-01",
+  });
+
+  assert.equal(analysis.yardAvailable, true);
+  assert.equal(analysis.nvv.wrong, 1);
+  assert.equal(analysis.nvv.rows[0].vesselId, "vessel-1");
+  assert.equal(analysis.rehandles.count, 1);
+  assert.equal(analysis.rehandles.rows[0].vesselId, "vessel-1");
 });

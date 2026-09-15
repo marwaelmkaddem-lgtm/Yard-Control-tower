@@ -1,18 +1,20 @@
 # Yard Control Tower
 
-Static GitHub Pages application for matching a terminal yard inventory with a Vessel Work List.
+Static GitHub Pages application for batch vessel-planning KPIs and optional Yard Control analysis.
 
 ## Current scope
 
-- Reads the yard inventory from Excel, including reports that contain a `Source Data` sheet.
-- Reads the tab-delimited Vessel Work List exported as TXT.
+- Reads multiple Vessel Work Lists in one batch from TXT, CSV, TSV, XLS, or XLSX.
+- Detects each vessel and lets the user mark Short Steaming separately for every vessel.
+- Calculates planner moves by planner, vessel, move kind, freight kind, and container size without requiring a yard file.
+- Reads the optional yard inventory from Excel, including reports that contain a `Source Data` sheet.
 - Compares each planned `LOAD` container's WI `Outbound Carrier` with the yard `O/B Actual Visit`.
 - Reports matched, wrong, missing, and not-in-yard NVV results with downloadable CSV detail.
 - Compares the WI and yard positions without replacing the yard snapshot position.
 - Simulates potential rehandles in WI move-time order using the final two digits of each yard position as the tier.
 - Keeps Empty/MTY equipment out of the missing-yard-NVV count.
-- Uses a manual Short Steaming selector; `GEN_CARRIER` never assigns SS automatically.
-- Saves calculated history locally in IndexedDB. Uploaded source files are not stored.
+- Keeps Planner Moves, NVV, Rehandles, Yard Inventory, and History in separate workspaces.
+- Saves calculated batch history locally in IndexedDB. Uploaded source files are not stored.
 - Provides a print layout for saving the overview as PDF.
 - Bundles the pinned SheetJS Community Edition reader locally; no runtime CDN script handles uploaded files.
 
