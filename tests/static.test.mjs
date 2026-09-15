@@ -24,3 +24,16 @@ test("the source inputs are explicitly labelled", () => {
   assert.match(html, /for="yardFile"/);
   assert.match(html, /for="wiFile"/);
 });
+
+test("work lists support batch upload while yard inventory stays optional", () => {
+  assert.match(html, /id="wiFile"[^>]*multiple/);
+  assert.match(html, /id="yardFile"[^>]*>/);
+  assert.doesNotMatch(html, /id="yardFile"[^>]*required/);
+  assert.match(html, /Optional · enables NVV and rehandles/);
+});
+
+test("planner, NVV, rehandles, yard, and history have separate workspaces", () => {
+  for (const workspace of ["planner", "nvv", "rehandles", "yard", "history"]) {
+    assert.match(html, new RegExp(`data-panel="${workspace}"`));
+  }
+});

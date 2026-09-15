@@ -331,16 +331,17 @@ export function analyzeYard(records) {
     categories: countBy(records, record => record.category),
     lines: countBy(records, record => record.lineOp),
     blocks: countBy(records, record => parsePosition(record.position).block),
+    outboundVisits: countBy(records, record => record.outboundVisit),
     dwellBuckets: dwellOrder.map(label => ({ label, value: dwellCounts.get(label) || 0 })),
   };
 }
 
-function vesselIdentity(loads) {
-  const visits = countBy(loads, record => record.outboundCarrier).filter(item => item.label !== "Unspecified");
-  const names = countBy(loads, record => record.outboundCarrierName).filter(item => item.label !== "Unspecified");
+export function vesselIdentity(records, fallbackName = "Unknown vessel") {
+  const visits = countBy(records, record => record.outboundCarrier).filter(item => item.label !== "Unspecified");
+  const names = countBy(records, record => record.outboundCarrierName).filter(item => item.label !== "Unspecified");
   return {
     visit: visits[0]?.label || "Unknown visit",
-    name: names[0]?.label || "Unknown vessel",
+    name: names[0]?.label || fallbackName || "Unknown vessel",
     multipleVisits: visits.length > 1,
   };
 }
@@ -487,6 +488,194 @@ export function calculateRehandles(yardRecords, wiRecords) {
   };
 }
 
+function lengthBand(value) {
+  const text = cleanText(value).replace(/[^0-9]/g, "");
+  if (text === "20") return "20 ft";
+  if (text === "40") return "40 ft";
+  if (text === "45") return "45 ft";
+  return "Other";
+}
+
+function mergeCounts(collections) {
+  const merged = new Map();
+  collections.flat().forEach(item => merged.set(item.label, (merged.get(item.label) || 0) + item.value));
+  return [...merged.entries()]
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label));
+}
+
+export function analyzePlannerMoves(vessels) {
+  const vesselRows = (vessels || []).map((vessel, index) => {
+    const moves = (vessel.wiRecords || []).filter(record => record.unit && ["LOAD", "DSCH"].includes(record.kind));
+    const identity = vesselIdentity(
+      moves,
+      cleanText(vessel.fallbackName || vessel.fileName).replace(/\.[^.]+$/, "") || `Vessel ${index + 1}`,
+    );
+    return {
+      id: vessel.id || `vessel-${index + 1}`,
+      fileName: vessel.fileName || "Work List",
+      name: identity.name,
+      visit: identity.visit,
+      multipleVisits: identity.multipleVisits,
+      shortSteaming: Boolean(vessel.shortSteaming),
+      totalMoves: moves.length,
+      loads: moves.filter(record => record.kind === "LOAD").length,
+      discharges: moves.filter(record => record.kind === "DSCH").length,
+      planners: countBy(moves, record => record.planner || "Unassigned"),
+      moves,
+    };
+  });
+
+  const moves = vesselRows.flatMap(vessel => vessel.moves.map(record => ({ ...record, vesselId: vessel.id })));
+  const plannerMap = new Map();
+  moves.forEach(record => {
+    const planner = record.planner || "Unassigned";
+    if (!plannerMap.has(planner)) {
+      plannerMap.set(planner, {
+        planner,
+        totalMoves: 0,
+        loads: 0,
+        discharges: 0,
+        full: 0,
+        empty: 0,
+        size20: 0,
+        size40: 0,
+        size45: 0,
+        otherSize: 0,
+        vesselIds: new Set(),
+      });
+    }
+    const row = plannerMap.get(planner);
+    row.totalMoves += 1;
+    row.loads += Number(record.kind === "LOAD");
+    row.discharges += Number(record.kind === "DSCH");
+    row.empty += Number(isEmpty(record));
+    row.full += Number(!isEmpty(record));
+    const size = lengthBand(record.length);
+    if (size === "20 ft") row.size20 += 1;
+    else if (size === "40 ft") row.size40 += 1;
+    else if (size === "45 ft") row.size45 += 1;
+    else row.otherSize += 1;
+    row.vesselIds.add(record.vesselId);
+  });
+
+  const planners = [...plannerMap.values()]
+    .map(row => ({
+      ...row,
+      vesselCount: row.vesselIds.size,
+      vesselIds: undefined,
+      share: moves.length ? row.totalMoves / moves.length : 0,
+    }))
+    .sort((a, b) => b.totalMoves - a.totalMoves || a.planner.localeCompare(b.planner));
+
+  return {
+    totalMoves: moves.length,
+    totalLoads: moves.filter(record => record.kind === "LOAD").length,
+    totalDischarges: moves.filter(record => record.kind === "DSCH").length,
+    plannerCount: planners.length,
+    networkMoves: vesselRows.filter(vessel => !vessel.shortSteaming).reduce((sum, vessel) => sum + vessel.totalMoves, 0),
+    shortSteamingMoves: vesselRows.filter(vessel => vessel.shortSteaming).reduce((sum, vessel) => sum + vessel.totalMoves, 0),
+    planners,
+    vesselRows: vesselRows.map(({ moves: ignored, ...vessel }) => vessel),
+    byMoveKind: countBy(moves, record => record.kind),
+    byFreightKind: countBy(moves, record => record.freightKind),
+    byLength: countBy(moves, record => lengthBand(record.length)),
+  };
+}
+
+function aggregateNvv(vessels) {
+  const summaries = vessels.map(vessel => vessel.nvv).filter(Boolean);
+  const rows = vessels.flatMap(vessel => (vessel.nvv?.rows || []).map(row => ({
+    ...row,
+    vesselId: vessel.id,
+    vesselName: vessel.name,
+    vesselVisit: vessel.visit,
+    shortSteaming: vessel.shortSteaming,
+  })));
+  const totalLoads = summaries.reduce((sum, item) => sum + item.totalLoads, 0);
+  const found = summaries.reduce((sum, item) => sum + item.found, 0);
+  const matched = summaries.reduce((sum, item) => sum + item.matched, 0);
+  return {
+    totalMoves: summaries.reduce((sum, item) => sum + item.totalMoves, 0),
+    totalLoads,
+    totalDischarges: summaries.reduce((sum, item) => sum + item.totalDischarges, 0),
+    found,
+    matched,
+    wrong: summaries.reduce((sum, item) => sum + item.wrong, 0),
+    missing: summaries.reduce((sum, item) => sum + item.missing, 0),
+    notInYard: summaries.reduce((sum, item) => sum + item.notInYard, 0),
+    positionMismatch: summaries.reduce((sum, item) => sum + item.positionMismatch, 0),
+    matchRate: found ? matched / found : 0,
+    coverageRate: totalLoads ? found / totalLoads : 0,
+    loadByFreightKind: mergeCounts(summaries.map(item => item.loadByFreightKind)),
+    loadByLength: mergeCounts(summaries.map(item => item.loadByLength)),
+    rows,
+  };
+}
+
+function aggregateRehandles(vessels) {
+  const summaries = vessels.map(vessel => vessel.rehandles).filter(Boolean);
+  const rows = vessels.flatMap(vessel => (vessel.rehandles?.rows || []).map(row => ({
+    ...row,
+    vesselId: vessel.id,
+    vesselName: vessel.name,
+    vesselVisit: vessel.visit,
+    shortSteaming: vessel.shortSteaming,
+  })));
+  return {
+    count: summaries.reduce((sum, item) => sum + item.count, 0),
+    uniqueBlockers: new Set(rows.map(row => `${row.vesselId}:${row.blockerUnit}`)).size,
+    affectedTargets: new Set(rows.map(row => `${row.vesselId}:${row.targetUnit}`)).size,
+    plannedLater: summaries.reduce((sum, item) => sum + item.plannedLater, 0),
+    external: summaries.reduce((sum, item) => sum + item.external, 0),
+    rows,
+  };
+}
+
+export function buildBatchAnalysis({ vessels, yardRecords, terminal, planningDate, sourceFiles }) {
+  const inputVessels = (vessels || []).filter(vessel => Array.isArray(vessel.wiRecords));
+  const yardAvailable = Array.isArray(yardRecords) && yardRecords.length > 0;
+  const planner = analyzePlannerMoves(inputVessels);
+  const vesselResults = inputVessels.map((vessel, index) => {
+    const plannerVessel = planner.vesselRows.find(item => item.id === (vessel.id || `vessel-${index + 1}`));
+    const nvv = yardAvailable ? crossCheckNvv(yardRecords, vessel.wiRecords) : null;
+    const rehandles = yardAvailable ? calculateRehandles(yardRecords, vessel.wiRecords) : null;
+    return {
+      ...plannerVessel,
+      nvv,
+      rehandles,
+    };
+  });
+  const yard = yardAvailable ? analyzeYard(yardRecords) : null;
+  const nvv = yardAvailable ? aggregateNvv(vesselResults) : null;
+  const rehandles = yardAvailable ? aggregateRehandles(vesselResults) : null;
+  const snapshotAgeDays = yardAvailable ? daysBetween(yard.snapshotLatest, planningDate) : null;
+
+  return {
+    version: 2,
+    id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    createdAt: new Date().toISOString(),
+    terminal,
+    planningDate,
+    yardAvailable,
+    sourceFiles: sourceFiles || {},
+    vessels: vesselResults,
+    planner,
+    yard,
+    nvv,
+    rehandles,
+    quality: yardAvailable ? {
+      snapshotAgeDays,
+      missingFromYard: nvv.notInYard,
+      wrongOrMissingNvv: nvv.wrong + nvv.missing,
+      positionMismatch: nvv.positionMismatch,
+      missingNvvFcl: yard.missingNvvFcl,
+      duplicateYardUnits: yard.duplicateCount,
+      nonStackPositions: yard.nonStackPositions,
+    } : null,
+  };
+}
+
 function removeUnitFromStack(unit, locations, stacks) {
   const location = locations.get(unit);
   if (!location) return;
@@ -535,10 +724,5 @@ export function buildAnalysis({ yardRecords, wiRecords, terminal, planningDate, 
 }
 
 export function compactHistoryRecord(analysis) {
-  return {
-    ...analysis,
-    yard: { ...analysis.yard },
-    nvv: { ...analysis.nvv },
-    rehandles: { ...analysis.rehandles },
-  };
+  return JSON.parse(JSON.stringify(analysis));
 }
