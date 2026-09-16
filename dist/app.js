@@ -20,6 +20,7 @@ const state = {
   loading: false,
   nvvPage: 1,
   rehandlePage: 1,
+  historyRecords: [],
 };
 
 const elements = Object.fromEntries([
@@ -34,6 +35,9 @@ const elements = Object.fromEntries([
   "rehandleTableBody", "rehandlePagination", "exportRehandleButton", "yardEmpty", "yardContent", "yardMeta",
   "yardKpis", "dwellChart", "blockChart", "categoryChart", "lineChart", "outboundChart", "qualityGrid",
   "historySummary", "historyTableBody", "historyEmpty", "clearHistoryButton", "toast",
+  "analyticsMeta", "analyticsPlanner", "analyticsTerminal", "analyticsFrom", "analyticsTo", "analyticsEmpty",
+  "analyticsContent", "analyticsKpis", "analyticsMovesTrend", "analyticsShareTrend", "analyticsMoveMix",
+  "analyticsSizeMix", "analyticsTableBody",
 ].map(id => [id, document.getElementById(id)]));
 
 initialize();
@@ -77,7 +81,7 @@ function registerWebMcp() {
           })),
           plannerMoves: planner.totalMoves,
           plannerCount: planner.plannerCount,
-          nvvExceptions: nvv ? nvv.wrong + nvv.missing + nvv.notInYard : null,
+          nvvExceptions: nvv?.exceptionCount ?? null,
           potentialRehandles: rehandles?.count ?? null,
         };
       },
@@ -85,17 +89,17 @@ function registerWebMcp() {
     {
       name: "open_control_tower_view",
       title: "Open a control tower view",
-      description: "Navigate to Planner moves, NVV, Rehandles, Yard inventory, History or Rules.",
+      description: "Navigate to Planner moves, Planner analytics, NVV, Rehandles, Yard inventory, History or Rules.",
       inputSchema: {
         type: "object",
-        properties: { view: { type: "string", enum: ["planner", "nvv", "rehandles", "yard", "history", "rules"] } },
+        properties: { view: { type: "string", enum: ["planner", "analytics", "nvv", "rehandles", "yard", "history", "rules"] } },
         required: ["view"],
         additionalProperties: false,
       },
       annotations: { readOnlyHint: false, untrustedContentHint: false },
       execute(input) {
         const view = input?.view;
-        if (!["planner", "nvv", "rehandles", "yard", "history", "rules"].includes(view)) throw new Error("Unsupported view.");
+        if (!["planner", "analytics", "nvv", "rehandles", "yard", "history", "rules"].includes(view)) throw new Error("Unsupported view.");
         activateTab(view);
         return { openedView: view };
       },
@@ -134,6 +138,8 @@ function bindEvents() {
   elements.rehandleSearch.addEventListener("input", () => { state.rehandlePage = 1; renderRehandleTable(); });
   elements.rehandleFilter.addEventListener("change", () => { state.rehandlePage = 1; renderRehandleTable(); });
   elements.rehandleVesselFilter.addEventListener("change", () => { state.rehandlePage = 1; renderRehandleWorkspace(); });
+  [elements.analyticsPlanner, elements.analyticsTerminal, elements.analyticsFrom, elements.analyticsTo]
+    .forEach(element => element.addEventListener("change", renderPlannerAnalytics));
   elements.clearHistoryButton.addEventListener("click", clearHistory);
   elements.historyTableBody.addEventListener("click", handleHistoryAction);
   document.querySelectorAll(".tab-button").forEach(button => button.addEventListener("click", () => activateTab(button.dataset.tab)));
@@ -274,11 +280,11 @@ function updateRunState() {
   else elements.setupStatus.textContent = `${state.preparedVessels.length} vessel${state.preparedVessels.length === 1 ? "" : "s"} ready`;
 
   if (!workListsReady) {
-    elements.sourceStatus.textContent = "Planner moves need only the Work Lists. Add Yard Inventory when it is available to enable NVV and rehandle control.";
+    elements.sourceStatus.textContent = "Work Lists calculate planner moves, NVV and potential rehandles. Yard Inventory is optional.";
   } else if (state.yardFile) {
-    elements.sourceStatus.textContent = `${state.preparedVessels.length} vessel${state.preparedVessels.length === 1 ? "" : "s"} ready. Yard control will be included.`;
+    elements.sourceStatus.textContent = `${state.preparedVessels.length} vessel${state.preparedVessels.length === 1 ? "" : "s"} ready. WI controls and the optional yard view will be included.`;
   } else {
-    elements.sourceStatus.textContent = `${state.preparedVessels.length} vessel${state.preparedVessels.length === 1 ? "" : "s"} ready. Planner moves can run without Yard Inventory.`;
+    elements.sourceStatus.textContent = `${state.preparedVessels.length} vessel${state.preparedVessels.length === 1 ? "" : "s"} ready. Planner, NVV and rehandle controls can run without Yard Inventory.`;
   }
 }
 
@@ -286,8 +292,8 @@ async function runAnalysis() {
   if (!elements.terminalSelect.value || !state.preparedVessels.length) return;
   setLoading(true);
   elements.sourceStatus.textContent = state.yardFile
-    ? "Calculating planner moves, yard NVV and rehandle exposure…"
-    : "Calculating planner and vessel moves…";
+    ? "Calculating WI planner, NVV and rehandle controls plus the yard view…"
+    : "Calculating WI planner, NVV and potential rehandle controls…";
   try {
     await nextFrame();
     let yardRecords = [];
@@ -322,8 +328,8 @@ async function runAnalysis() {
       showToast("Batch analyzed. Local history could not be saved on this device.");
     }
     elements.sourceStatus.textContent = analysis.yardAvailable
-      ? `${formatNumber(analysis.planner.totalMoves)} planner moves and ${formatNumber(analysis.yard.total)} yard units processed.`
-      : `${formatNumber(analysis.planner.totalMoves)} planner moves processed. Yard control was skipped.`;
+      ? `${formatNumber(analysis.planner.totalMoves)} WI moves and ${formatNumber(analysis.yard.total)} optional yard units processed.`
+      : `${formatNumber(analysis.planner.totalMoves)} WI moves processed, including NVV and potential rehandles.`;
   } catch (error) {
     console.error(error);
     elements.sourceStatus.textContent = error.message || "The batch could not be analyzed.";
@@ -432,32 +438,27 @@ function renderAnalysis(analysis) {
   elements.plannerEmpty.hidden = true;
   elements.plannerContent.hidden = false;
   elements.batchTitle.textContent = `${analysis.vessels.length} vessel${analysis.vessels.length === 1 ? "" : "s"} · ${analysis.terminal}`;
-  elements.batchMeta.textContent = `Planning date ${formatDate(analysis.planningDate)} · ${analysis.yardAvailable ? "Yard control included" : "Planner moves only"} · Run ${formatDateTime(analysis.createdAt)}`;
+  elements.batchMeta.textContent = `Planning date ${formatDate(analysis.planningDate)} · WI controls${analysis.yardAvailable ? " + optional yard view" : ""} · Run ${formatDateTime(analysis.createdAt)}`;
   renderPlannerWorkspace(analysis);
 
+  elements.nvvEmpty.hidden = true;
+  elements.nvvContent.hidden = false;
+  elements.rehandleEmpty.hidden = true;
+  elements.rehandleContent.hidden = false;
+  populateVesselFilter(elements.nvvVesselFilter, analysis.vessels);
+  populateVesselFilter(elements.rehandleVesselFilter, analysis.vessels);
+  elements.nvvTabCount.textContent = formatNumber(nvvExceptions(analysis.nvv));
+  elements.rehandleTabCount.textContent = formatNumber(analysis.rehandles?.count || 0);
+  renderNvvWorkspace();
+  renderRehandleWorkspace();
+
   if (analysis.yardAvailable) {
-    elements.nvvEmpty.hidden = true;
-    elements.nvvContent.hidden = false;
-    elements.rehandleEmpty.hidden = true;
-    elements.rehandleContent.hidden = false;
     elements.yardEmpty.hidden = true;
     elements.yardContent.hidden = false;
-    populateVesselFilter(elements.nvvVesselFilter, analysis.vessels);
-    populateVesselFilter(elements.rehandleVesselFilter, analysis.vessels);
-    elements.nvvTabCount.textContent = formatNumber(nvvExceptions(analysis.nvv));
-    elements.rehandleTabCount.textContent = formatNumber(analysis.rehandles.count);
-    renderNvvWorkspace();
-    renderRehandleWorkspace();
     renderYardWorkspace(analysis);
   } else {
-    elements.nvvEmpty.hidden = false;
-    elements.nvvContent.hidden = true;
-    elements.rehandleEmpty.hidden = false;
-    elements.rehandleContent.hidden = true;
     elements.yardEmpty.hidden = false;
     elements.yardContent.hidden = true;
-    elements.nvvTabCount.textContent = "—";
-    elements.rehandleTabCount.textContent = "—";
   }
   activateTab("planner");
   document.querySelector(".workspace-tabs")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -514,21 +515,21 @@ function renderNvvWorkspace() {
   if (!state.analysis?.nvv) return;
   const summary = selectedVesselSummary("nvv");
   elements.nvvMeta.textContent = elements.nvvVesselFilter.value === "all"
-    ? `${state.analysis.vessels.length} vessels combined · Yard snapshot ${state.analysis.sourceFiles.yard || "uploaded"}`
+    ? `${state.analysis.vessels.length} vessels combined · WI discharge rows · Yard Inventory not required`
     : vesselLabel(state.analysis.vessels.find(vessel => vessel.id === elements.nvvVesselFilter.value));
   elements.nvvKpis.innerHTML = renderKpiCards([
-    { label: "Planned loads", value: summary.totalLoads, note: `${formatNumber(summary.found)} found in yard`, tone: "neutral" },
-    { label: "Matched NVV", value: summary.matched, note: formatPercent(summary.matchRate), tone: "success" },
-    { label: "Wrong NVV", value: summary.wrong, note: "Different outbound visit", tone: summary.wrong ? "danger" : "success" },
-    { label: "Missing NVV", value: summary.missing, note: "Blank yard outbound visit", tone: summary.missing ? "warning" : "success" },
-    { label: "Not in yard", value: summary.notInYard, note: formatPercent(1 - summary.coverageRate), tone: summary.notInYard ? "warning" : "success" },
+    { label: "FCL evaluated", value: summary.eligibleFcl, note: `${formatNumber(summary.totalDischarges)} discharge rows`, tone: "neutral" },
+    { label: "Valid NVV", value: summary.valid, note: formatPercent(summary.accuracyRate), tone: "success" },
+    { label: "Missing NVV", value: summary.missingNvv, note: "Transhipment next vessel", tone: summary.missingNvv ? "danger" : "success" },
+    { label: "Classification issues", value: summary.classificationIssues, note: "POD, category or outbound", tone: summary.classificationIssues ? "warning" : "success" },
+    { label: "Excluded", value: summary.excludedEmpty + summary.excludedRestow, note: `${formatNumber(summary.excludedEmpty)} MTY · ${formatNumber(summary.excludedRestow)} restow`, tone: "neutral" },
   ]);
-  elements.nvvScore.textContent = formatPercent(summary.matchRate);
+  elements.nvvScore.textContent = formatPercent(summary.accuracyRate);
   const distribution = [
-    { label: "Matched", value: summary.matched, tone: "success" },
-    { label: "Wrong NVV", value: summary.wrong, tone: "danger" },
-    { label: "Missing NVV", value: summary.missing, tone: "warning" },
-    { label: "Not in yard", value: summary.notInYard, tone: "neutral" },
+    { label: "Valid import", value: summary.validImport, tone: "success" },
+    { label: "Valid transhipment", value: summary.validTransship, tone: "success" },
+    { label: "Valid HLC ITT", value: summary.validItt, tone: "neutral" },
+    { label: "Exceptions", value: summary.exceptionCount, tone: summary.exceptionCount ? "danger" : "success" },
   ];
   elements.nvvDistribution.innerHTML = distribution.map(item => `<div class="status-segment ${item.tone}"><strong>${formatNumber(item.value)}</strong><span>${escapeHtml(item.label)}</span></div>`).join("");
   renderNvvTable();
@@ -539,11 +540,17 @@ function renderNvvTable() {
   const vesselId = elements.nvvVesselFilter.value || "all";
   const query = elements.nvvSearch.value.trim().toUpperCase();
   const filter = elements.nvvFilter.value;
+  const validStatuses = new Set(["valid-import", "valid-transship", "valid-itt"]);
+  const excludedStatuses = new Set(["excluded-empty", "excluded-restow"]);
   const rows = state.analysis.nvv.rows.filter(row => {
     const matchesVessel = vesselId === "all" || row.vesselId === vesselId;
-    const matchesQuery = !query || [row.unit, row.expectedVisit, row.actualVisit, row.vesselName, row.vesselVisit, row.yardPosition, row.wiPosition]
+    const matchesQuery = !query || [row.unit, row.pod, row.outboundCarrier, row.lineOp, row.category, row.planner, row.vesselName, row.vesselVisit]
       .some(value => cleanText(value).toUpperCase().includes(query));
-    const matchesFilter = filter === "all" || (filter === "exceptions" ? row.status !== "match" : row.status === filter);
+    const matchesFilter = filter === "all"
+      || (filter === "exceptions" && !validStatuses.has(row.status) && !excludedStatuses.has(row.status))
+      || (filter === "valid" && validStatuses.has(row.status))
+      || (filter === "excluded" && excludedStatuses.has(row.status))
+      || row.status === filter;
     return matchesVessel && matchesQuery && matchesFilter;
   });
   const page = paginate(rows, state.nvvPage);
@@ -554,14 +561,15 @@ function renderNvvTable() {
       <td><span class="status-badge ${row.shortSteaming ? "warning" : "neutral"}">${row.shortSteaming ? "SS" : "Network"}</span></td>
       <td><strong>${escapeHtml(row.unit)}</strong></td>
       <td>${statusBadge(row.status)}</td>
-      <td>${valueOrDash(row.expectedVisit)}</td>
-      <td>${valueOrDash(row.actualVisit)}</td>
+      <td>${valueOrDash(row.freightKind)}</td>
       <td>${valueOrDash(row.lineOp)}</td>
+      <td>${valueOrDash(row.pod)}</td>
       <td>${valueOrDash(row.category)}</td>
-      <td>${valueOrDash(row.yardPosition, row.positionStatus === "mismatch")}</td>
-      <td>${valueOrDash(row.wiPosition, row.positionStatus === "mismatch")}</td>
+      <td>${valueOrDash(row.outboundCarrier)}</td>
+      <td>${valueOrDash(row.planner)}</td>
+      <td class="explanation-cell">${escapeHtml(row.explanation)}</td>
     </tr>
-  `).join("") || emptyRow(10, "No NVV rows match the current filters.");
+  `).join("") || emptyRow(11, "No NVV rows match the current filters.");
   renderPagination(elements.nvvPagination, page, next => { state.nvvPage = next; renderNvvTable(); });
 }
 
@@ -569,13 +577,13 @@ function renderRehandleWorkspace() {
   if (!state.analysis?.rehandles) return;
   const summary = selectedVesselSummary("rehandles");
   elements.rehandleMeta.textContent = elements.rehandleVesselFilter.value === "all"
-    ? `${state.analysis.vessels.length} vessels simulated separately`
+    ? `${state.analysis.vessels.length} vessels evaluated separately from WI current position and load order · not confirmed moves`
     : vesselLabel(state.analysis.vessels.find(vessel => vessel.id === elements.rehandleVesselFilter.value));
   elements.rehandleKpis.innerHTML = renderKpiCards([
-    { label: "Potential rehandles", value: summary.count, note: `${formatNumber(summary.uniqueBlockers)} unique blockers`, tone: summary.count ? "warning" : "success" },
+    { label: "Potential rehandles", value: summary.count, note: "WI-derived indicator", tone: summary.count ? "warning" : "success" },
     { label: "Affected targets", value: summary.affectedTargets, note: "Planned load units", tone: summary.affectedTargets ? "warning" : "success" },
-    { label: "Not planned on WI", value: summary.external, note: "External blockers", tone: summary.external ? "danger" : "success" },
-    { label: "Planned later", value: summary.plannedLater, note: "Later in vessel sequence", tone: summary.plannedLater ? "warning" : "success" },
+    { label: "Probable", value: summary.probable, note: "Stronger WI sequence evidence", tone: summary.probable ? "danger" : "success" },
+    { label: "Possible", value: summary.possible, note: "Review planning constraints", tone: summary.possible ? "warning" : "success" },
   ]);
   renderRehandleTable();
 }
@@ -589,7 +597,7 @@ function renderRehandleTable() {
     const matchesVessel = vesselId === "all" || row.vesselId === vesselId;
     const matchesQuery = !query || [row.targetUnit, row.blockerUnit, row.stack, row.targetPlanner, row.targetPow, row.vesselName, row.vesselVisit]
       .some(value => cleanText(value).toUpperCase().includes(query));
-    const matchesFilter = filter === "all" || row.blockerStatus === filter || (filter === "later" && row.blockerStatus === "later-wi");
+    const matchesFilter = filter === "all" || row.confidence === filter;
     return matchesVessel && matchesQuery && matchesFilter;
   });
   const page = paginate(rows, state.rehandlePage);
@@ -602,12 +610,13 @@ function renderRehandleTable() {
       <td>${escapeHtml(row.blockerUnit)}</td>
       <td>${escapeHtml(row.stack)}</td>
       <td>${row.blockerTier} above ${row.targetTier}</td>
-      <td>${statusBadge(row.blockerStatus)}</td>
-      <td>${valueOrDash(row.targetMoveTime)}</td>
+      <td>${statusBadge(row.confidence)}</td>
+      <td>${valueOrDash(row.targetMoveTime)}<small class="table-subline">${escapeHtml(row.blockerMoveTime || "Blocker time unavailable")}</small></td>
       <td>${valueOrDash(row.targetPlanner)}</td>
       <td>${valueOrDash(row.targetPow)}</td>
+      <td class="explanation-cell">${escapeHtml(row.explanation)}</td>
     </tr>
-  `).join("") || emptyRow(10, "No rehandles match the current filters.");
+  `).join("") || emptyRow(11, "No potential rehandles match the current filters.");
   renderPagination(elements.rehandlePagination, page, next => { state.rehandlePage = next; renderRehandleTable(); });
 }
 
@@ -631,7 +640,7 @@ function renderYardWorkspace(analysis) {
   elements.qualityGrid.innerHTML = [
     { title: "Snapshot age", value: quality.snapshotAgeDays === null ? "n.a." : `${Math.abs(quality.snapshotAgeDays)} d`, note: "Difference from planning date", tone: quality.snapshotAgeDays !== null && Math.abs(quality.snapshotAgeDays) > 1 ? "danger" : "" },
     { title: "Load units absent", value: quality.missingFromYard, note: "Planned LOAD units not in snapshot", tone: quality.missingFromYard ? "warning" : "" },
-    { title: "Wrong or missing NVV", value: quality.wrongOrMissingNvv, note: "Found loads needing NVV review", tone: quality.wrongOrMissingNvv ? "danger" : "" },
+    { title: "Yard visit mismatch", value: quality.wrongOrMissingYardNvv ?? quality.wrongOrMissingNvv, note: "Optional WI load vs yard outbound check", tone: (quality.wrongOrMissingYardNvv ?? quality.wrongOrMissingNvv) ? "danger" : "" },
     { title: "Position mismatches", value: quality.positionMismatch, note: "WI position differs from yard", tone: quality.positionMismatch ? "warning" : "" },
     { title: "Duplicate yard units", value: quality.duplicateYardUnits, note: "Repeated container numbers", tone: quality.duplicateYardUnits ? "danger" : "" },
     { title: "Non-stack positions", value: quality.nonStackPositions, note: "No usable final tier", tone: quality.nonStackPositions ? "warning" : "" },
@@ -687,6 +696,17 @@ function statusBadge(status) {
     "not-yard": ["Not in yard", "neutral"],
     external: ["Not on WI", "warning"],
     "later-wi": ["Planned later", "neutral"],
+    "valid-import": ["Valid import", "success"],
+    "valid-transship": ["Valid transhipment", "success"],
+    "valid-itt": ["Valid HLC ITT", "success"],
+    "missing-nvv": ["Missing NVV", "danger"],
+    "category-mismatch": ["Category mismatch", "warning"],
+    "outbound-mismatch": ["Outbound mismatch", "warning"],
+    "missing-pod": ["Missing POD", "danger"],
+    "excluded-empty": ["Excluded MTY", "neutral"],
+    "excluded-restow": ["Excluded restow", "neutral"],
+    probable: ["Probable", "warning"],
+    possible: ["Possible", "neutral"],
   };
   const [label, tone] = mapping[status] || [status, "neutral"];
   return `<span class="status-badge ${tone}">${escapeHtml(label)}</span>`;
@@ -736,6 +756,7 @@ function activateTab(tab) {
   });
   document.querySelectorAll(".tab-panel").forEach(panel => panel.classList.toggle("active", panel.dataset.panel === tab));
   if (tab === "history") void renderHistory();
+  if (tab === "analytics") renderPlannerAnalytics();
 }
 
 function exportPlanner() {
@@ -767,15 +788,16 @@ function exportNvv() {
       Type: row.shortSteaming ? "Short steaming" : "Network",
       Container: row.unit,
       Status: statusText(row.status),
-      "Expected NVV": row.expectedVisit,
-      "Yard NVV": row.actualVisit,
+      Freight: row.freightKind,
       Line: row.lineOp,
+      POD: row.pod,
       Category: row.category,
-      "Yard Position": row.yardPosition,
-      "WI Position": row.wiPosition,
-      "Position Check": row.positionStatus,
+      "Outbound Carrier / NVV": row.outboundCarrier,
+      Planner: row.planner,
+      "P.O.W.": row.pow,
+      Explanation: row.explanation,
     }));
-  downloadCsv(rows, `${safeName(state.analysis.terminal)}-${state.analysis.planningDate}-yard-nvv.csv`);
+  downloadCsv(rows, `${safeName(state.analysis.terminal)}-${state.analysis.planningDate}-wi-nvv.csv`);
 }
 
 function exportRehandles() {
@@ -792,19 +814,38 @@ function exportRehandles() {
       Stack: row.stack,
       "Target Tier": row.targetTier,
       "Blocker Tier": row.blockerTier,
-      "Blocker Status": statusText(row.blockerStatus),
+      Confidence: statusText(row.confidence),
+      Source: row.source,
       "Blocker Line": row.blockerLine,
       "Blocker Category": row.blockerCategory,
       "Blocker NVV": row.blockerVisit,
       "Target Move Time": row.targetMoveTime,
+      "Blocker Move Time": row.blockerMoveTime,
       Planner: row.targetPlanner,
       "P.O.W.": row.targetPow,
+      Evidence: row.explanation,
     }));
   downloadCsv(rows, `${safeName(state.analysis.terminal)}-${state.analysis.planningDate}-potential-rehandles.csv`);
 }
 
 function statusText(status) {
-  return ({ match: "Matched", wrong: "Wrong NVV", missing: "Missing NVV", "not-yard": "Not in yard", external: "Not planned on vessel", "later-wi": "Planned later on WI" })[status] || status;
+  return ({
+    match: "Matched",
+    wrong: "Wrong NVV",
+    missing: "Missing NVV",
+    "not-yard": "Not in yard",
+    "valid-import": "Valid import",
+    "valid-transship": "Valid transhipment",
+    "valid-itt": "Valid HLC ITT",
+    "missing-nvv": "Missing NVV",
+    "category-mismatch": "Category mismatch",
+    "outbound-mismatch": "Outbound mismatch",
+    "missing-pod": "Missing POD",
+    "excluded-empty": "Excluded MTY",
+    "excluded-restow": "Excluded restow",
+    probable: "Probable",
+    possible: "Possible",
+  })[status] || status;
 }
 
 function downloadCsv(rows, filename) {
@@ -837,7 +878,7 @@ function resetCurrent() {
   elements.yardFile.value = "";
   [elements.wiDrop, elements.yardDrop].forEach(zone => zone.classList.remove("ready", "dragover"));
   elements.wiFileName.textContent = "TXT, CSV, TSV, XLS or XLSX · multiple files";
-  elements.yardFileName.textContent = "Optional · enables NVV and rehandles";
+  elements.yardFileName.textContent = "Optional · adds yard inventory cross-checks";
   elements.wiState.textContent = "Required";
   elements.yardState.textContent = "Optional";
   elements.vesselSetup.hidden = true;
@@ -899,6 +940,7 @@ async function renderHistory() {
   try {
     const rawRecords = await getHistory();
     const records = rawRecords.map(upgradeLegacyRecord);
+    state.historyRecords = records;
     const vesselCount = records.reduce((sum, record) => sum + record.vessels.length, 0);
     const networkCount = records.reduce((sum, record) => sum + record.vessels.filter(vessel => !vessel.shortSteaming).length, 0);
     const shortSteamingCount = records.reduce((sum, record) => sum + record.vessels.filter(vessel => vessel.shortSteaming).length, 0);
@@ -922,22 +964,192 @@ async function renderHistory() {
           <td>${escapeHtml(vesselNames || "Unknown vessel")}${escapeHtml(more)}<small class="table-subline">${formatNumber(record.vessels.length)} vessel${record.vessels.length === 1 ? "" : "s"}</small></td>
           <td>${formatNumber(network)} / ${formatNumber(shortSteaming)}</td>
           <td>${formatNumber(record.planner?.totalMoves || 0)}</td>
-          <td>${record.yardAvailable && record.nvv ? formatNumber(nvvExceptions(record.nvv)) : '<span class="muted-cell">No yard</span>'}</td>
-          <td>${record.yardAvailable && record.rehandles ? formatNumber(record.rehandles.count) : '<span class="muted-cell">No yard</span>'}</td>
+          <td>${record.nvv ? formatNumber(nvvExceptions(record.nvv)) : '<span class="muted-cell">Legacy</span>'}</td>
+          <td>${record.rehandles ? formatNumber(record.rehandles.count) : '<span class="muted-cell">Legacy</span>'}</td>
           <td><button class="text-button" type="button" data-history-action="view" data-history-id="${escapeHtml(record.id)}">View</button> <button class="text-button danger-text" type="button" data-history-action="delete" data-history-id="${escapeHtml(record.id)}">Delete</button></td>
         </tr>
       `;
     }).join("");
+    populateAnalyticsFilters(records);
+    renderPlannerAnalytics();
   } catch (error) {
     console.warn(error);
+    state.historyRecords = [];
     elements.historySummary.innerHTML = "";
     elements.historyEmpty.hidden = false;
     elements.historyEmpty.textContent = "History is unavailable in this browser.";
+    elements.analyticsEmpty.hidden = false;
+    elements.analyticsContent.hidden = true;
   }
 }
 
+function populateAnalyticsFilters(records) {
+  const cycles = buildPlannerCycles(records);
+  const plannerValue = elements.analyticsPlanner.value;
+  const terminalValue = elements.analyticsTerminal.value;
+  const planners = [...new Set(cycles.map(cycle => cycle.planner))].sort((a, b) => a.localeCompare(b));
+  const terminals = [...new Set(cycles.map(cycle => cycle.terminal))].sort((a, b) => a.localeCompare(b));
+  elements.analyticsPlanner.innerHTML = `<option value="all">All planners</option>${planners.map(planner => `<option value="${escapeHtml(planner)}">${escapeHtml(planner)}</option>`).join("")}`;
+  elements.analyticsTerminal.innerHTML = `<option value="all">All terminals</option>${terminals.map(terminal => `<option value="${escapeHtml(terminal)}">${escapeHtml(terminal)}</option>`).join("")}`;
+  if ([...elements.analyticsPlanner.options].some(option => option.value === plannerValue)) elements.analyticsPlanner.value = plannerValue;
+  if ([...elements.analyticsTerminal.options].some(option => option.value === terminalValue)) elements.analyticsTerminal.value = terminalValue;
+}
+
+function buildPlannerCycles(records) {
+  return (records || []).flatMap(record => (record.vessels || []).flatMap(vessel => {
+    const breakdown = Array.isArray(vessel.plannerBreakdown) ? vessel.plannerBreakdown : [];
+    return breakdown.map(row => ({
+      id: `${record.id}:${vessel.id}:${row.planner}`,
+      planningDate: record.planningDate || "",
+      createdAt: record.createdAt || "",
+      terminal: record.terminal || "Unspecified",
+      vesselName: vessel.name || "Unknown vessel",
+      vesselVisit: vessel.visit || "Unknown visit",
+      shortSteaming: Boolean(vessel.shortSteaming),
+      planner: row.planner || "Unassigned",
+      totalMoves: row.totalMoves || 0,
+      loads: row.loads || 0,
+      discharges: row.discharges || 0,
+      full: row.full || 0,
+      empty: row.empty || 0,
+      size20: row.size20 || 0,
+      size40: row.size40 || 0,
+      size45: row.size45 || 0,
+      otherSize: row.otherSize || 0,
+      share: Number.isFinite(row.share) ? row.share : (vessel.totalMoves ? (row.totalMoves || 0) / vessel.totalMoves : 0),
+    }));
+  })).sort((a, b) => a.planningDate.localeCompare(b.planningDate) || a.createdAt.localeCompare(b.createdAt) || a.vesselName.localeCompare(b.vesselName));
+}
+
+function renderPlannerAnalytics() {
+  const allCycles = buildPlannerCycles(state.historyRecords);
+  const planner = elements.analyticsPlanner.value || "all";
+  const terminal = elements.analyticsTerminal.value || "all";
+  const from = elements.analyticsFrom.value;
+  const to = elements.analyticsTo.value;
+  const cycles = allCycles.filter(cycle =>
+    (planner === "all" || cycle.planner === planner)
+    && (terminal === "all" || cycle.terminal === terminal)
+    && (!from || cycle.planningDate >= from)
+    && (!to || cycle.planningDate <= to)
+  );
+
+  elements.analyticsEmpty.hidden = cycles.length > 0;
+  elements.analyticsContent.hidden = cycles.length === 0;
+  if (!cycles.length) return;
+
+  const totalMoves = cycles.reduce((sum, cycle) => sum + cycle.totalMoves, 0);
+  const averageMoves = totalMoves / cycles.length;
+  const averageShare = cycles.reduce((sum, cycle) => sum + cycle.share, 0) / cycles.length;
+  const networkCycles = cycles.filter(cycle => !cycle.shortSteaming).length;
+  const shortSteamingCycles = cycles.length - networkCycles;
+  const dateCount = new Set(cycles.map(cycle => cycle.planningDate)).size;
+  elements.analyticsMeta.textContent = `${planner === "all" ? "All planners" : planner} · ${terminal === "all" ? "All terminals" : terminal} · ${formatNumber(cycles.length)} planner-vessel cycles across ${formatNumber(dateCount)} planning dates`;
+  elements.analyticsKpis.innerHTML = renderKpiCards([
+    { label: "Planning cycles", value: cycles.length, note: "One planner + one vessel", tone: "neutral" },
+    { label: "Moves", value: totalMoves, note: "Across filtered cycles", tone: "teal" },
+    { label: "Average moves / cycle", value: averageMoves.toFixed(1), note: "Workload trend", tone: "blue" },
+    { label: "Average planner share", value: formatPercent(averageShare), note: "Share of vessel moves", tone: "success" },
+    { label: "Network / SS cycles", value: `${networkCycles} / ${shortSteamingCycles}`, note: "Vessel classification", tone: shortSteamingCycles ? "warning" : "neutral" },
+  ]);
+
+  renderTrendChart(elements.analyticsMovesTrend, cycles, cycle => cycle.totalMoves, value => formatNumber(value));
+  renderTrendChart(elements.analyticsShareTrend, cycles, cycle => cycle.share * 100, value => `${formatNumber(value)}%`, true);
+  renderBarList(elements.analyticsMoveMix, [
+    { label: "Load", value: cycles.reduce((sum, cycle) => sum + cycle.loads, 0) },
+    { label: "Discharge", value: cycles.reduce((sum, cycle) => sum + cycle.discharges, 0) },
+  ]);
+  renderBarList(elements.analyticsSizeMix, [
+    { label: "20 ft", value: cycles.reduce((sum, cycle) => sum + cycle.size20, 0) },
+    { label: "40 ft", value: cycles.reduce((sum, cycle) => sum + cycle.size40, 0) },
+    { label: "45 ft", value: cycles.reduce((sum, cycle) => sum + cycle.size45, 0) },
+    { label: "Other", value: cycles.reduce((sum, cycle) => sum + cycle.otherSize, 0) },
+  ]);
+  elements.analyticsTableBody.innerHTML = [...cycles].reverse().map(cycle => `
+    <tr>
+      <td>${escapeHtml(formatDate(cycle.planningDate))}</td>
+      <td><strong>${escapeHtml(cycle.planner)}</strong></td>
+      <td>${escapeHtml(cycle.terminal)}</td>
+      <td>${escapeHtml(cycle.vesselName)}<small class="table-subline">${escapeHtml(cycle.vesselVisit)}</small></td>
+      <td><span class="status-badge ${cycle.shortSteaming ? "warning" : "neutral"}">${cycle.shortSteaming ? "SS" : "Network"}</span></td>
+      <td>${formatNumber(cycle.totalMoves)}</td>
+      <td>${formatPercent(cycle.share)}</td>
+      <td>${formatNumber(cycle.loads)}</td>
+      <td>${formatNumber(cycle.discharges)}</td>
+      <td>${formatNumber(cycle.full)}</td>
+      <td>${formatNumber(cycle.empty)}</td>
+    </tr>
+  `).join("");
+}
+
+function renderTrendChart(container, sourcePoints, valueAccessor, formatter, percentScale = false) {
+  const points = sourcePoints.slice(-30);
+  const width = 760;
+  const height = 250;
+  const left = 48;
+  const right = 18;
+  const top = 18;
+  const bottom = 42;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const values = points.map(valueAccessor);
+  const observedMax = Math.max(1, ...values);
+  const maximum = percentScale ? 100 : Math.ceil(observedMax / 10) * 10;
+  const xAt = index => points.length === 1 ? left + plotWidth / 2 : left + (index / (points.length - 1)) * plotWidth;
+  const yAt = value => top + plotHeight - (Math.max(0, value) / maximum) * plotHeight;
+  const grid = [0, 0.25, 0.5, 0.75, 1].map(ratio => {
+    const y = top + plotHeight - ratio * plotHeight;
+    return `<line class="trend-grid-line" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"></line><text class="trend-axis-label" x="${left - 8}" y="${y + 4}" text-anchor="end">${escapeHtml(formatter(maximum * ratio))}</text>`;
+  }).join("");
+  const polyline = points.map((point, index) => `${xAt(index)},${yAt(valueAccessor(point))}`).join(" ");
+  const labelIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
+  const xLabels = labelIndexes.map(index => `<text class="trend-axis-label" x="${xAt(index)}" y="${height - 13}" text-anchor="middle">${escapeHtml(shortDate(points[index].planningDate))}</text>`).join("");
+  const dots = points.map((point, index) => `
+    <circle class="trend-dot" cx="${xAt(index)}" cy="${yAt(valueAccessor(point))}" r="4">
+      <title>${escapeHtml(`${formatDate(point.planningDate)} · ${point.planner} · ${point.vesselName}: ${formatter(valueAccessor(point))}`)}</title>
+    </circle>
+  `).join("");
+  container.innerHTML = `
+    <svg class="trend-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Planning-cycle trend; exact values are listed in the table below">
+      ${grid}
+      <polyline class="trend-line" points="${polyline}"></polyline>
+      ${dots}
+      ${xLabels}
+    </svg>
+    <p class="trend-note">Showing the latest ${formatNumber(points.length)} filtered cycles. Hover a point for planner, vessel and exact value.</p>
+  `;
+}
+
+function shortDate(value) {
+  if (!value) return "n.a.";
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? cleanText(value) : new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short" }).format(date);
+}
+
 function upgradeLegacyRecord(record) {
-  if (record?.version === 2 && Array.isArray(record.vessels) && record.planner) return record;
+  if (record?.version >= 2 && Array.isArray(record.vessels) && record.planner) {
+    return {
+      ...record,
+      vessels: record.vessels.map(vessel => ({
+        ...vessel,
+        plannerBreakdown: Array.isArray(vessel.plannerBreakdown)
+          ? vessel.plannerBreakdown
+          : (vessel.planners || []).map(row => ({
+            planner: row.label || "Unassigned",
+            totalMoves: row.value || 0,
+            loads: 0,
+            discharges: 0,
+            full: 0,
+            empty: 0,
+            size20: 0,
+            size40: 0,
+            size45: 0,
+            otherSize: 0,
+            share: vessel.totalMoves ? (row.value || 0) / vessel.totalMoves : 0,
+          })),
+      })),
+    };
+  }
   const identity = record?.nvv?.vessel || { name: "Legacy vessel", visit: "Unknown visit" };
   const totalMoves = record?.nvv?.totalMoves || 0;
   const legacyId = "legacy-vessel";
@@ -1015,6 +1227,7 @@ async function clearHistory() {
 }
 
 function nvvExceptions(nvv) {
+  if (Number.isFinite(nvv?.exceptionCount)) return nvv.exceptionCount;
   return (nvv?.wrong || 0) + (nvv?.missing || 0) + (nvv?.notInYard || 0);
 }
 

@@ -910,6 +910,31 @@ button:focus-visible,
   grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.75fr);
 }
 
+.analytics-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.analytics-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(210px, 1fr));
+}
+
+.analytics-filters .compact-field {
+  grid-template-columns: 62px minmax(145px, 1fr);
+}
+
+.analytics-filters .date-filter {
+  grid-template-columns: 62px minmax(145px, 1fr);
+}
+
+.analytics-filters input {
+  min-height: 38px;
+}
+
+.analytics-empty {
+  min-height: 340px;
+}
+
 .content-card {
   min-width: 0;
   padding: 18px;
@@ -977,6 +1002,47 @@ button:focus-visible,
   font-size: 0.76rem;
   font-weight: 800;
   text-align: right;
+}
+
+.trend-chart {
+  display: block;
+  width: 100%;
+  min-height: 240px;
+  overflow: visible;
+}
+
+.trend-grid-line {
+  stroke: var(--line);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-line {
+  fill: none;
+  stroke: var(--teal);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-dot {
+  fill: var(--surface);
+  stroke: var(--orange);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-axis-label {
+  fill: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.trend-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 
 .subsection-heading {
@@ -1174,6 +1240,12 @@ tbody tr:last-child td {
   color: var(--muted);
   font-size: 0.65rem;
   font-weight: 500;
+}
+
+.explanation-cell {
+  min-width: 280px;
+  max-width: 430px;
+  white-space: normal;
 }
 
 .status-badge {
@@ -1417,8 +1489,13 @@ tbody tr:last-child td {
   }
 
   .planner-grid,
-  .analysis-grid {
+  .analysis-grid,
+  .analytics-grid {
     grid-template-columns: 1fr;
+  }
+
+  .analytics-filters {
+    grid-template-columns: 1fr 1fr;
   }
 
   .wide-card {
@@ -1516,6 +1593,11 @@ tbody tr:last-child td {
     width: 100%;
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .analytics-filters {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .result-actions button,

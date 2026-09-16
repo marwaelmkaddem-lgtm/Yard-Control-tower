@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Batch vessel planning, Yard NVV and rehandle control for SPC Tangier." />
+    <meta name="description" content="Batch vessel planning, WI-based NVV and potential rehandle control, plus optional Yard Inventory analytics." />
     <meta name="color-scheme" content="light dark" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'" />
@@ -95,7 +95,7 @@
             <span class="file-icon" aria-hidden="true">▦</span>
             <span class="drop-copy">
               <strong>Yard inventory</strong>
-              <small id="yardFileName">Optional · enables NVV and rehandles</small>
+              <small id="yardFileName">Optional · adds yard inventory cross-checks</small>
             </span>
             <span class="file-state optional" id="yardState">Optional</span>
           </label>
@@ -107,7 +107,7 @@
         </div>
 
         <div class="source-status" id="sourceStatus" role="status">
-          Planner moves need only the Work Lists. Add Yard Inventory when it is available to enable NVV and rehandle control.
+          Work Lists calculate planner moves, NVV and potential rehandles. Yard Inventory is optional and has its own view.
         </div>
 
         <section class="vessel-setup" id="vesselSetup" hidden aria-labelledby="vesselSetupTitle">
@@ -124,6 +124,7 @@
 
       <nav class="workspace-tabs" aria-label="Control tower sections">
         <button class="tab-button active" type="button" data-tab="planner" aria-selected="true">Planner moves</button>
+        <button class="tab-button" type="button" data-tab="analytics" aria-selected="false">Planner analytics</button>
         <button class="tab-button" type="button" data-tab="nvv" aria-selected="false">NVV / Data Accuracy <span id="nvvTabCount">—</span></button>
         <button class="tab-button" type="button" data-tab="rehandles" aria-selected="false">Rehandles <span id="rehandleTabCount">—</span></button>
         <button class="tab-button" type="button" data-tab="yard" aria-selected="false">Yard inventory</button>
@@ -190,15 +191,45 @@
           </div>
         </div>
 
+        <div class="tab-panel" data-panel="analytics">
+          <div class="result-header">
+            <div><p class="eyebrow">Saved planning cycles</p><h2>Planner analytics</h2><p id="analyticsMeta">Each cycle is one planner's contribution to one vessel in one saved batch.</p></div>
+            <div class="result-actions analytics-filters">
+              <label class="compact-field"><span>Planner</span><select id="analyticsPlanner"><option value="all">All planners</option></select></label>
+              <label class="compact-field"><span>Terminal</span><select id="analyticsTerminal"><option value="all">All terminals</option></select></label>
+              <label class="compact-field date-filter"><span>From</span><input id="analyticsFrom" type="date" /></label>
+              <label class="compact-field date-filter"><span>To</span><input id="analyticsTo" type="date" /></label>
+            </div>
+          </div>
+          <div class="panel-empty analytics-empty" id="analyticsEmpty">
+            <span class="empty-icon" aria-hidden="true">↗</span>
+            <h2>No planning cycles saved yet</h2>
+            <p>Analyze vessel Work Lists to build each planner's workload and share trend over time.</p>
+          </div>
+          <div id="analyticsContent" hidden>
+            <div class="kpi-grid five" id="analyticsKpis"></div>
+            <div class="analysis-grid analytics-grid">
+              <article class="content-card"><div class="card-heading"><div><p class="eyebrow">Cycle trend</p><h3>Moves per planning cycle</h3></div></div><div id="analyticsMovesTrend"></div></article>
+              <article class="content-card"><div class="card-heading"><div><p class="eyebrow">Workload share</p><h3>Planner share per vessel</h3></div></div><div id="analyticsShareTrend"></div></article>
+              <article class="content-card"><div class="card-heading"><div><p class="eyebrow">Move mix</p><h3>Load and discharge</h3></div></div><div class="bar-list" id="analyticsMoveMix"></div></article>
+              <article class="content-card"><div class="card-heading"><div><p class="eyebrow">Container size</p><h3>Size mix</h3></div></div><div class="bar-list" id="analyticsSizeMix"></div></article>
+            </div>
+            <article class="content-card table-card">
+              <div class="table-toolbar"><div><p class="eyebrow">Cycle history</p><h3>Planner contribution by vessel</h3></div></div>
+              <div class="table-wrap"><table><thead><tr><th>Planning date</th><th>Planner</th><th>Terminal</th><th>Vessel / visit</th><th>Type</th><th>Moves</th><th>Share</th><th>Load</th><th>Discharge</th><th>FCL</th><th>MTY</th></tr></thead><tbody id="analyticsTableBody"></tbody></table></div>
+            </article>
+          </div>
+        </div>
+
         <div class="tab-panel" data-panel="nvv">
           <div class="panel-empty" id="nvvEmpty">
             <span class="empty-icon" aria-hidden="true">NVV</span>
-            <h2>NVV control needs Yard Inventory</h2>
-            <p>You can still analyze planner moves without it. Add the optional yard file when the snapshot is available.</p>
+            <h2>No Work List analyzed yet</h2>
+            <p>NVV is calculated from discharge rows in each vessel Work List; Yard Inventory is not required.</p>
           </div>
           <div id="nvvContent" hidden>
             <div class="result-header">
-              <div><p class="eyebrow">Yard connection control</p><h2>NVV / Data Accuracy</h2><p id="nvvMeta"></p></div>
+              <div><p class="eyebrow">WI discharge control</p><h2>NVV / Data Accuracy</h2><p id="nvvMeta"></p></div>
               <div class="result-actions">
                 <label class="compact-field"><span>Vessel</span><select id="nvvVesselFilter"></select></label>
                 <button class="secondary-button" id="exportNvvButton" type="button">Export NVV CSV</button>
@@ -207,20 +238,20 @@
             <div class="kpi-grid five" id="nvvKpis"></div>
             <article class="content-card distribution-card">
               <div class="card-heading">
-                <div><p class="eyebrow">Connection result</p><h3>NVV status</h3></div>
+                <div><p class="eyebrow">WI validation result</p><h3>NVV status</h3></div>
                 <span class="score-ring" id="nvvScore">0%</span>
               </div>
               <div class="status-distribution" id="nvvDistribution"></div>
             </article>
             <article class="content-card table-card">
               <div class="table-toolbar">
-                <div><p class="eyebrow">Planned load cross-check</p><h3>NVV detail</h3></div>
+                <div><p class="eyebrow">Discharge FCL validation</p><h3>NVV detail</h3></div>
                 <div class="filters">
-                  <label class="search-field"><span class="sr-only">Search containers</span><input id="nvvSearch" type="search" placeholder="Search container or visit" /></label>
-                  <label><span class="sr-only">NVV status</span><select id="nvvFilter"><option value="exceptions">Exceptions only</option><option value="all">All units</option><option value="wrong">Wrong NVV</option><option value="missing">Missing NVV</option><option value="not-yard">Not in yard</option><option value="match">Matched</option></select></label>
+                  <label class="search-field"><span class="sr-only">Search containers</span><input id="nvvSearch" type="search" placeholder="Search container, POD or NVV" /></label>
+                  <label><span class="sr-only">NVV status</span><select id="nvvFilter"><option value="exceptions">Exceptions only</option><option value="all">All discharge rows</option><option value="valid">All valid</option><option value="valid-import">Valid import</option><option value="valid-transship">Valid transhipment</option><option value="valid-itt">Valid HLC ITT</option><option value="missing-nvv">Missing NVV</option><option value="category-mismatch">Category mismatch</option><option value="outbound-mismatch">Outbound mismatch</option><option value="missing-pod">Missing POD</option><option value="excluded">Excluded MTY / restow</option></select></label>
                 </div>
               </div>
-              <div class="table-wrap"><table><thead><tr><th>Vessel</th><th>Type</th><th>Container</th><th>Status</th><th>Expected NVV</th><th>Yard NVV</th><th>Line</th><th>Category</th><th>Yard position</th><th>WI position</th></tr></thead><tbody id="nvvTableBody"></tbody></table></div>
+              <div class="table-wrap"><table><thead><tr><th>Vessel</th><th>Type</th><th>Container</th><th>Status</th><th>Freight</th><th>Line</th><th>POD</th><th>Category</th><th>Outbound carrier / NVV</th><th>Planner</th><th>Explanation</th></tr></thead><tbody id="nvvTableBody"></tbody></table></div>
               <div class="pagination" id="nvvPagination"></div>
             </article>
           </div>
@@ -229,8 +260,8 @@
         <div class="tab-panel" data-panel="rehandles">
           <div class="panel-empty" id="rehandleEmpty">
             <span class="empty-icon" aria-hidden="true">RH</span>
-            <h2>Rehandle control needs Yard Inventory</h2>
-            <p>Add the yard snapshot to simulate extraction against each vessel Work List.</p>
+            <h2>No Work List analyzed yet</h2>
+            <p>Potential rehandles are derived from WI current stack/tier and planned load order; Yard Inventory is not required.</p>
           </div>
           <div id="rehandleContent" hidden>
             <div class="result-header">
@@ -243,13 +274,13 @@
             <div class="kpi-grid four" id="rehandleKpis"></div>
             <article class="content-card table-card">
               <div class="table-toolbar">
-                <div><p class="eyebrow">Blocker detail</p><h3>Rehandle list</h3></div>
+                <div><p class="eyebrow">WI stack evidence</p><h3>Potential rehandle list</h3></div>
                 <div class="filters">
                   <label class="search-field"><span class="sr-only">Search rehandles</span><input id="rehandleSearch" type="search" placeholder="Search target, blocker or stack" /></label>
-                  <label><span class="sr-only">Blocker type</span><select id="rehandleFilter"><option value="all">All blockers</option><option value="external">Not planned on vessel</option><option value="later">Planned later on WI</option></select></label>
+                  <label><span class="sr-only">Confidence</span><select id="rehandleFilter"><option value="all">All confidence levels</option><option value="probable">Probable</option><option value="possible">Possible</option></select></label>
                 </div>
               </div>
-              <div class="table-wrap"><table><thead><tr><th>Vessel</th><th>Type</th><th>Target load</th><th>Blocker</th><th>Stack</th><th>Tier</th><th>Blocker status</th><th>Move time</th><th>Planner</th><th>P.O.W.</th></tr></thead><tbody id="rehandleTableBody"></tbody></table></div>
+              <div class="table-wrap"><table><thead><tr><th>Vessel</th><th>Type</th><th>Target load</th><th>Blocker</th><th>Stack</th><th>Tier</th><th>Confidence</th><th>Target / blocker time</th><th>Planner</th><th>P.O.W.</th><th>Evidence</th></tr></thead><tbody id="rehandleTableBody"></tbody></table></div>
               <div class="pagination" id="rehandlePagination"></div>
             </article>
           </div>
@@ -280,7 +311,7 @@
 
         <div class="tab-panel" data-panel="history">
           <div class="result-header">
-            <div><p class="eyebrow">Saved on this device</p><h2>Analysis history</h2><p>Planner batches remain available in this browser. NVV and rehandle results are included only when a yard snapshot was supplied.</p></div>
+            <div><p class="eyebrow">Saved on this device</p><h2>Analysis history</h2><p>Planner, NVV and potential-rehandle results come from every saved WI batch. Yard Inventory remains optional.</p></div>
             <button class="danger-button" id="clearHistoryButton" type="button">Clear history</button>
           </div>
           <div class="kpi-grid four" id="historySummary"></div>
@@ -294,9 +325,9 @@
           <div class="rules-grid">
             <article class="content-card rule-card"><span>01</span><h3>Planner moves</h3><p>Each valid LOAD or DSCH row is assigned to the WI Planner. Batch totals combine all selected Work Lists.</p></article>
             <article class="content-card rule-card"><span>02</span><h3>Short steaming</h3><p>Short steaming is selected manually for each detected vessel. GEN_CARRIER never marks a vessel as SS.</p></article>
-            <article class="content-card rule-card"><span>03</span><h3>Optional yard</h3><p>Work Lists alone calculate planner KPIs. NVV, rehandles and Yard Inventory activate only when a yard snapshot is added.</p></article>
-            <article class="content-card rule-card"><span>04</span><h3>NVV source</h3><p>Expected NVV comes from WI Outbound Carrier. Yard NVV comes from O/B Actual Visit.</p></article>
-            <article class="content-card rule-card"><span>05</span><h3>Rehandle model</h3><p>Each vessel is simulated separately in WI move-time order. A blocker is counted once, then treated as relocated.</p></article>
+            <article class="content-card rule-card"><span>03</span><h3>Optional yard</h3><p>Work Lists alone calculate planner KPIs, NVV and potential rehandles. A yard snapshot adds only the independent inventory view and source cross-checks.</p></article>
+            <article class="content-card rule-card"><span>04</span><h3>NVV source</h3><p>Discharge FCL rows use WI POD, Category, Line and Outbound Carrier. MTY and restows are excluded; HLC GEN/Truck transhipments are treated as ITT.</p></article>
+            <article class="content-card rule-card"><span>05</span><h3>Rehandle model</h3><p>Each vessel is evaluated separately using WI current stack/tier and planned load order. Results are Possible or Probable—not confirmed without historical yard evidence.</p></article>
             <article class="content-card rule-card"><span>06</span><h3>Local processing</h3><p>Files are read inside this browser. History stores calculated results, not the uploaded source files.</p></article>
           </div>
         </div>
