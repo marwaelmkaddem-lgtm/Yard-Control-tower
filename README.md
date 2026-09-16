@@ -1,19 +1,18 @@
 # Yard Control Tower
 
-Static GitHub Pages application for batch vessel-planning KPIs and optional Yard Control analysis.
+Static GitHub Pages application for batch vessel-planning KPIs, WI-based NVV/rehandle control, planner trends, and optional Yard Inventory analysis.
 
 ## Current scope
 
 - Reads multiple Vessel Work Lists in one batch from TXT, CSV, TSV, XLS, or XLSX.
 - Detects each vessel and lets the user mark Short Steaming separately for every vessel.
 - Calculates planner moves by planner, vessel, move kind, freight kind, and container size without requiring a yard file.
-- Reads the optional yard inventory from Excel, including reports that contain a `Source Data` sheet.
-- Compares each planned `LOAD` container's WI `Outbound Carrier` with the yard `O/B Actual Visit`.
-- Reports matched, wrong, missing, and not-in-yard NVV results with downloadable CSV detail.
-- Compares the WI and yard positions without replacing the yard snapshot position.
-- Simulates potential rehandles in WI move-time order using the final two digits of each yard position as the tier.
-- Keeps Empty/MTY equipment out of the missing-yard-NVV count.
-- Keeps Planner Moves, NVV, Rehandles, Yard Inventory, and History in separate workspaces.
+- Calculates discharge NVV directly from each WI using POD, Category, Line and Outbound Carrier; Yard Inventory is not required.
+- Treats local-POD imports, non-local transhipments and HLC ITT routing separately, while excluding Empty/MTY and restow moves.
+- Detects WI-based potential rehandles from current stack/tier and planned load order, labelled Possible or Probable rather than Confirmed.
+- Reads optional Yard Inventory from Excel, including reports with a `Source Data` sheet, for a separate yard view and added WI/yard cross-checks.
+- Keeps Planner Moves, Planner Analytics, NVV, Rehandles, Yard Inventory, and History in separate workspaces.
+- Charts each planner's moves and vessel share across saved planner-vessel planning cycles, with planner, terminal and date filters.
 - Saves calculated batch history locally in IndexedDB. Uploaded source files are not stored.
 - Provides a print layout for saving the overview as PDF.
 - Bundles the pinned SheetJS Community Edition reader locally; no runtime CDN script handles uploaded files.
@@ -39,4 +38,4 @@ Expected address after the first successful deployment:
 
 ## Rehandle calculation boundary
 
-The first version uses exact stack codes derived from the yard position and counts each unit still above a planned target once before treating it as relocated. It does not yet model 20-foot/40-foot cross-bay interference or a terminal-specific rehandle strategy. The output is therefore a planning indicator to validate against the live yard.
+The WI model uses exact stack codes from `Current Position`, interprets the final two digits as tier, and checks planned `LOAD` order. A later-planned unit above an earlier target is counted once before being treated as relocated. It does not model 20-foot/40-foot cross-bay interference or a terminal-specific strategy, so results remain planning indicators to validate operationally.

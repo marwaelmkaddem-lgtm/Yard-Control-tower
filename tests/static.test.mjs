@@ -29,11 +29,18 @@ test("work lists support batch upload while yard inventory stays optional", () =
   assert.match(html, /id="wiFile"[^>]*multiple/);
   assert.match(html, /id="yardFile"[^>]*>/);
   assert.doesNotMatch(html, /id="yardFile"[^>]*required/);
-  assert.match(html, /Optional · enables NVV and rehandles/);
+  assert.match(html, /Optional · adds yard inventory cross-checks/);
+  assert.match(html, /Work Lists calculate planner moves, NVV and potential rehandles/);
 });
 
-test("planner, NVV, rehandles, yard, and history have separate workspaces", () => {
-  for (const workspace of ["planner", "nvv", "rehandles", "yard", "history"]) {
+test("planner, analytics, NVV, rehandles, yard, and history have separate workspaces", () => {
+  for (const workspace of ["planner", "analytics", "nvv", "rehandles", "yard", "history"]) {
     assert.match(html, new RegExp(`data-panel="${workspace}"`));
+  }
+});
+
+test("planner analytics includes cycle filters, trend graphs, and detail table", () => {
+  for (const id of ["analyticsPlanner", "analyticsTerminal", "analyticsFrom", "analyticsTo", "analyticsMovesTrend", "analyticsShareTrend", "analyticsTableBody"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
   }
 });

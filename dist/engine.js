@@ -37,6 +37,8 @@ const WI_ALIASES = {
   freightKind: ["sts", "status", "freight kind"],
   category: ["cat", "category"],
   lineOp: ["line", "line op", "line operator"],
+  typeIso: ["type iso", "iso", "iso type", "equipment type"],
+  specialStow: ["special stow", "special handling", "handling instruction", "special instructions"],
 };
 
 export function normalizeHeader(value) {
@@ -136,6 +138,8 @@ export function normalizeWiRows(rawRows) {
       freightKind: cleanText(readAlias(lookup, WI_ALIASES.freightKind)).toUpperCase(),
       category: titleCase(readAlias(lookup, WI_ALIASES.category)),
       lineOp: cleanText(readAlias(lookup, WI_ALIASES.lineOp)).toUpperCase(),
+      typeIso: cleanText(readAlias(lookup, WI_ALIASES.typeIso)).toUpperCase(),
+      specialStow: cleanText(readAlias(lookup, WI_ALIASES.specialStow)).toUpperCase(),
     });
   });
   return records;
@@ -412,18 +416,158 @@ export function crossCheckNvv(yardRecords, wiRecords) {
   };
 }
 
-export function calculateRehandles(yardRecords, wiRecords) {
-  const loads = wiRecords.filter(record => record.kind === "LOAD" && record.unit);
-  const loadByUnit = new Map(loads.map(load => [load.unit, load]));
-  const yardByUnit = new Map();
-  yardRecords.forEach(record => {
-    if (!yardByUnit.has(record.unit)) yardByUnit.set(record.unit, record);
+function normalizedCategory(value) {
+  return cleanText(value).toUpperCase().replace(/[^A-Z]/g, "");
+}
+
+function isImportCategory(value) {
+  return normalizedCategory(value) === "IMPORT";
+}
+
+function isTransshipCategory(value) {
+  return /TRANSSHIP/.test(normalizedCategory(value));
+}
+
+function isRestowCategory(value) {
+  return /RESTOW/.test(normalizedCategory(value));
+}
+
+function isGenericOutbound(value) {
+  const normalized = cleanText(value).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return ["GEN", "GENCARRIER", "GENTRUCK", "TRUCK", "ROAD"].includes(normalized);
+}
+
+export function analyzeWiNvv(wiRecords, terminal = "MAMED") {
+  const terminalCode = cleanText(terminal).toUpperCase();
+  const discharges = (wiRecords || []).filter(record => record.kind === "DSCH" && record.unit);
+  const rows = discharges.map(record => {
+    const pod = cleanText(record.pod).toUpperCase();
+    const outboundCarrier = cleanText(record.outboundCarrier).toUpperCase();
+    const lineOp = cleanText(record.lineOp).toUpperCase();
+    const genericOutbound = isGenericOutbound(outboundCarrier);
+    const categoryImport = isImportCategory(record.category);
+    const categoryTransship = isTransshipCategory(record.category);
+    let status;
+    let explanation;
+
+    if (isEmpty(record)) {
+      status = "excluded-empty";
+      explanation = "Empty/MTY discharge is excluded from the missing-NVV KPI.";
+    } else if (isRestowCategory(record.category)) {
+      status = "excluded-restow";
+      explanation = "Restow is excluded from import and transhipment NVV control.";
+    } else if (!pod) {
+      status = "missing-pod";
+      explanation = "POD is blank, so the WI cannot classify the discharge as import or transhipment.";
+    } else if (lineOp === "HLC" && categoryTransship && genericOutbound) {
+      status = "valid-itt";
+      explanation = "Valid HLC ITT: Transship category with GEN/Truck outbound routing.";
+    } else if (pod === terminalCode) {
+      if (!categoryImport) {
+        status = "category-mismatch";
+        explanation = `POD ${pod} is local to ${terminalCode}, so Category should be Import.`;
+      } else if (!genericOutbound) {
+        status = "outbound-mismatch";
+        explanation = "Import discharge should use GEN/Truck as the outbound carrier.";
+      } else {
+        status = "valid-import";
+        explanation = `Valid import: POD ${terminalCode}, Import category and GEN/Truck outbound routing.`;
+      }
+    } else if (!categoryTransship) {
+      status = "category-mismatch";
+      explanation = `POD ${pod} is not ${terminalCode}, so Category should be Transship.`;
+    } else if (!outboundCarrier || genericOutbound) {
+      status = "missing-nvv";
+      explanation = "Transhipment discharge needs a specific next-vessel visit in Outbound Carrier.";
+    } else {
+      status = "valid-transship";
+      explanation = "Valid transhipment: non-local POD, Transship category and a specific next-vessel visit.";
+    }
+
+    return {
+      unit: record.unit,
+      status,
+      lineOp,
+      freightKind: record.freightKind,
+      category: record.category,
+      pod,
+      outboundCarrier,
+      planner: record.planner,
+      pow: record.pow,
+      moveTime: record.moveTime,
+      queue: record.queue,
+      sequence: record.sequence,
+      explanation,
+    };
   });
 
+  const validStatuses = new Set(["valid-import", "valid-transship", "valid-itt"]);
+  const excludedStatuses = new Set(["excluded-empty", "excluded-restow"]);
+  const valid = rows.filter(row => validStatuses.has(row.status)).length;
+  const eligibleFcl = rows.filter(row => !excludedStatuses.has(row.status)).length;
+  const categoryMismatch = rows.filter(row => row.status === "category-mismatch").length;
+  const outboundMismatch = rows.filter(row => row.status === "outbound-mismatch").length;
+  const missingPod = rows.filter(row => row.status === "missing-pod").length;
+  const missingNvv = rows.filter(row => row.status === "missing-nvv").length;
+
+  return {
+    mode: "wi",
+    totalDischarges: discharges.length,
+    eligibleFcl,
+    excludedEmpty: rows.filter(row => row.status === "excluded-empty").length,
+    excludedRestow: rows.filter(row => row.status === "excluded-restow").length,
+    valid,
+    validImport: rows.filter(row => row.status === "valid-import").length,
+    validTransship: rows.filter(row => row.status === "valid-transship").length,
+    validItt: rows.filter(row => row.status === "valid-itt").length,
+    missingNvv,
+    categoryMismatch,
+    outboundMismatch,
+    missingPod,
+    classificationIssues: categoryMismatch + outboundMismatch + missingPod,
+    exceptionCount: missingNvv + categoryMismatch + outboundMismatch + missingPod,
+    accuracyRate: eligibleFcl ? valid / eligibleFcl : 0,
+    byLine: countBy(rows.filter(row => !validStatuses.has(row.status) && !excludedStatuses.has(row.status)), row => row.lineOp),
+    rows,
+  };
+}
+
+function compareLoadOrder(a, b) {
+  return parseMoveTime(a.moveTime) - parseMoveTime(b.moveTime)
+    || cleanText(a.queue).localeCompare(cleanText(b.queue))
+    || (a.sequence || 0) - (b.sequence || 0)
+    || (a.index || 0) - (b.index || 0);
+}
+
+function hasSpecialPlanningConstraint(record) {
+  if (/R/.test(cleanText(record.typeIso).toUpperCase())) return true;
+  const text = [record.typeIso, record.specialStow, record.category, record.moveStage]
+    .map(cleanText)
+    .join(" ")
+    .toUpperCase();
+  return /DG|HAZ|REEFER|OOG|OUT OF GAUGE|SPECIAL/.test(text);
+}
+
+function rehandleConfidence(target, blocker) {
+  const targetTime = parseMoveTime(target.moveTime);
+  const blockerTime = parseMoveTime(blocker.moveTime);
+  const timedLater = targetTime < Number.MAX_SAFE_INTEGER && blockerTime < Number.MAX_SAFE_INTEGER && blockerTime > targetTime;
+  const sequencedLater = Boolean(target.sequence && blocker.sequence && blocker.sequence > target.sequence);
+  const samePow = Boolean(target.pow && blocker.pow && cleanText(target.pow).toUpperCase() === cleanText(blocker.pow).toUpperCase());
+  const samePod = Boolean(target.pod && blocker.pod && cleanText(target.pod).toUpperCase() === cleanText(blocker.pod).toUpperCase());
+  const compatibleWeight = Number.isFinite(target.weight) && Number.isFinite(blocker.weight) && Math.abs(target.weight - blocker.weight) <= 6;
+  const constrained = hasSpecialPlanningConstraint(target) || hasSpecialPlanningConstraint(blocker);
+  return !constrained && (timedLater || sequencedLater) && (samePow || samePod || compatibleWeight) ? "probable" : "possible";
+}
+
+export function calculateWiRehandles(wiRecords) {
+  const loads = (wiRecords || []).filter(record => record.kind === "LOAD" && record.unit && !isRestowCategory(record.category));
+  const loadByUnit = new Map(loads.map(load => [load.unit, load]));
   const stacks = new Map();
   const activeLocations = new Map();
-  yardRecords.forEach(record => {
-    const position = parsePosition(record.position);
+
+  loads.forEach(record => {
+    const position = parsePosition(record.currentPosition);
     if (!position.usable || activeLocations.has(record.unit)) return;
     if (!stacks.has(position.stack)) stacks.set(position.stack, new Map());
     const tiers = stacks.get(position.stack);
@@ -432,15 +576,11 @@ export function calculateRehandles(yardRecords, wiRecords) {
     activeLocations.set(record.unit, { stack: position.stack, tier: position.tier });
   });
 
-  const orderedLoads = [...loads].sort((a, b) =>
-    parseMoveTime(a.moveTime) - parseMoveTime(b.moveTime)
-    || a.queue.localeCompare(b.queue)
-    || a.sequence - b.sequence
-    || a.index - b.index
-  );
-
+  const positionedLoads = activeLocations.size;
+  const orderedLoads = [...loads].sort(compareLoadOrder);
   const rows = [];
   const affectedTargets = new Set();
+
   orderedLoads.forEach(targetLoad => {
     const location = activeLocations.get(targetLoad.unit);
     if (!location) return;
@@ -456,21 +596,27 @@ export function calculateRehandles(yardRecords, wiRecords) {
     blockers.sort((a, b) => b.tier - a.tier || a.unit.localeCompare(b.unit));
     blockers.forEach(blocker => {
       const blockerLoad = loadByUnit.get(blocker.unit);
-      const blockerYard = yardByUnit.get(blocker.unit);
+      if (!blockerLoad || compareLoadOrder(blockerLoad, targetLoad) <= 0) return;
+      const confidence = rehandleConfidence(targetLoad, blockerLoad);
       rows.push({
         targetUnit: targetLoad.unit,
         blockerUnit: blocker.unit,
         stack: location.stack,
         targetTier: location.tier,
         blockerTier: blocker.tier,
-        blockerStatus: blockerLoad ? "later-wi" : "external",
-        blockerLine: blockerYard?.lineOp || "",
-        blockerCategory: blockerYard?.category || "",
-        blockerVisit: blockerYard?.outboundVisit || "",
+        blockerStatus: "later-wi",
+        confidence,
+        source: "WI",
+        blockerLine: blockerLoad.lineOp,
+        blockerCategory: blockerLoad.category,
+        blockerVisit: blockerLoad.outboundCarrier,
+        blockerMoveTime: blockerLoad.moveTime,
+        blockerPow: blockerLoad.pow,
         targetMoveTime: targetLoad.moveTime,
         targetPlanner: targetLoad.planner,
         targetPow: targetLoad.pow,
         targetQueue: targetLoad.queue,
+        explanation: `${blocker.unit} is at tier ${blocker.tier}, above ${targetLoad.unit} at tier ${location.tier}, and is planned later in the WI.`,
       });
       affectedTargets.add(targetLoad.unit);
       removeUnitFromStack(blocker.unit, activeLocations, stacks);
@@ -479,13 +625,21 @@ export function calculateRehandles(yardRecords, wiRecords) {
   });
 
   return {
+    mode: "wi",
     count: rows.length,
     uniqueBlockers: new Set(rows.map(row => row.blockerUnit)).size,
     affectedTargets: affectedTargets.size,
-    plannedLater: rows.filter(row => row.blockerStatus === "later-wi").length,
-    external: rows.filter(row => row.blockerStatus === "external").length,
+    plannedLater: rows.length,
+    external: 0,
+    probable: rows.filter(row => row.confidence === "probable").length,
+    possible: rows.filter(row => row.confidence === "possible").length,
+    positionedLoads,
     rows,
   };
+}
+
+export function calculateRehandles(yardRecords, wiRecords) {
+  return calculateWiRehandles(wiRecords);
 }
 
 function lengthBand(value) {
@@ -522,6 +676,7 @@ export function analyzePlannerMoves(vessels) {
       loads: moves.filter(record => record.kind === "LOAD").length,
       discharges: moves.filter(record => record.kind === "DSCH").length,
       planners: countBy(moves, record => record.planner || "Unassigned"),
+      plannerBreakdown: summarizePlannerMoves(moves),
       moves,
     };
   });
@@ -583,9 +738,77 @@ export function analyzePlannerMoves(vessels) {
   };
 }
 
+function summarizePlannerMoves(moves) {
+  const plannerMap = new Map();
+  (moves || []).forEach(record => {
+    const planner = record.planner || "Unassigned";
+    if (!plannerMap.has(planner)) {
+      plannerMap.set(planner, {
+        planner,
+        totalMoves: 0,
+        loads: 0,
+        discharges: 0,
+        full: 0,
+        empty: 0,
+        size20: 0,
+        size40: 0,
+        size45: 0,
+        otherSize: 0,
+      });
+    }
+    const row = plannerMap.get(planner);
+    row.totalMoves += 1;
+    row.loads += Number(record.kind === "LOAD");
+    row.discharges += Number(record.kind === "DSCH");
+    row.empty += Number(isEmpty(record));
+    row.full += Number(!isEmpty(record));
+    const size = lengthBand(record.length);
+    if (size === "20 ft") row.size20 += 1;
+    else if (size === "40 ft") row.size40 += 1;
+    else if (size === "45 ft") row.size45 += 1;
+    else row.otherSize += 1;
+  });
+  return [...plannerMap.values()]
+    .map(row => ({ ...row, share: moves.length ? row.totalMoves / moves.length : 0 }))
+    .sort((a, b) => b.totalMoves - a.totalMoves || a.planner.localeCompare(b.planner));
+}
+
 function aggregateNvv(vessels) {
   const summaries = vessels.map(vessel => vessel.nvv).filter(Boolean);
   const rows = vessels.flatMap(vessel => (vessel.nvv?.rows || []).map(row => ({
+    ...row,
+    vesselId: vessel.id,
+    vesselName: vessel.name,
+    vesselVisit: vessel.visit,
+    shortSteaming: vessel.shortSteaming,
+  })));
+  const eligibleFcl = summaries.reduce((sum, item) => sum + item.eligibleFcl, 0);
+  const valid = summaries.reduce((sum, item) => sum + item.valid, 0);
+  return {
+    mode: "wi",
+    totalDischarges: summaries.reduce((sum, item) => sum + item.totalDischarges, 0),
+    eligibleFcl,
+    excludedEmpty: summaries.reduce((sum, item) => sum + item.excludedEmpty, 0),
+    excludedRestow: summaries.reduce((sum, item) => sum + item.excludedRestow, 0),
+    valid,
+    validImport: summaries.reduce((sum, item) => sum + item.validImport, 0),
+    validTransship: summaries.reduce((sum, item) => sum + item.validTransship, 0),
+    validItt: summaries.reduce((sum, item) => sum + item.validItt, 0),
+    missingNvv: summaries.reduce((sum, item) => sum + item.missingNvv, 0),
+    categoryMismatch: summaries.reduce((sum, item) => sum + item.categoryMismatch, 0),
+    outboundMismatch: summaries.reduce((sum, item) => sum + item.outboundMismatch, 0),
+    missingPod: summaries.reduce((sum, item) => sum + item.missingPod, 0),
+    classificationIssues: summaries.reduce((sum, item) => sum + item.classificationIssues, 0),
+    exceptionCount: summaries.reduce((sum, item) => sum + item.exceptionCount, 0),
+    accuracyRate: eligibleFcl ? valid / eligibleFcl : 0,
+    byLine: mergeCounts(summaries.map(item => item.byLine)),
+    rows,
+  };
+}
+
+function aggregateYardConnections(vessels) {
+  const summaries = vessels.map(vessel => vessel.yardConnection).filter(Boolean);
+  const rows = vessels.flatMap(vessel => (vessel.yardConnection?.rows || []).map(row => ({
     ...row,
     vesselId: vessel.id,
     vesselName: vessel.name,
@@ -607,8 +830,6 @@ function aggregateNvv(vessels) {
     positionMismatch: summaries.reduce((sum, item) => sum + item.positionMismatch, 0),
     matchRate: found ? matched / found : 0,
     coverageRate: totalLoads ? found / totalLoads : 0,
-    loadByFreightKind: mergeCounts(summaries.map(item => item.loadByFreightKind)),
-    loadByLength: mergeCounts(summaries.map(item => item.loadByLength)),
     rows,
   };
 }
@@ -623,11 +844,15 @@ function aggregateRehandles(vessels) {
     shortSteaming: vessel.shortSteaming,
   })));
   return {
+    mode: "wi",
     count: summaries.reduce((sum, item) => sum + item.count, 0),
     uniqueBlockers: new Set(rows.map(row => `${row.vesselId}:${row.blockerUnit}`)).size,
     affectedTargets: new Set(rows.map(row => `${row.vesselId}:${row.targetUnit}`)).size,
     plannedLater: summaries.reduce((sum, item) => sum + item.plannedLater, 0),
     external: summaries.reduce((sum, item) => sum + item.external, 0),
+    probable: summaries.reduce((sum, item) => sum + item.probable, 0),
+    possible: summaries.reduce((sum, item) => sum + item.possible, 0),
+    positionedLoads: summaries.reduce((sum, item) => sum + item.positionedLoads, 0),
     rows,
   };
 }
@@ -638,21 +863,24 @@ export function buildBatchAnalysis({ vessels, yardRecords, terminal, planningDat
   const planner = analyzePlannerMoves(inputVessels);
   const vesselResults = inputVessels.map((vessel, index) => {
     const plannerVessel = planner.vesselRows.find(item => item.id === (vessel.id || `vessel-${index + 1}`));
-    const nvv = yardAvailable ? crossCheckNvv(yardRecords, vessel.wiRecords) : null;
-    const rehandles = yardAvailable ? calculateRehandles(yardRecords, vessel.wiRecords) : null;
+    const nvv = analyzeWiNvv(vessel.wiRecords, terminal);
+    const rehandles = calculateWiRehandles(vessel.wiRecords);
+    const yardConnection = yardAvailable ? crossCheckNvv(yardRecords, vessel.wiRecords) : null;
     return {
       ...plannerVessel,
       nvv,
       rehandles,
+      yardConnection,
     };
   });
   const yard = yardAvailable ? analyzeYard(yardRecords) : null;
-  const nvv = yardAvailable ? aggregateNvv(vesselResults) : null;
-  const rehandles = yardAvailable ? aggregateRehandles(vesselResults) : null;
+  const nvv = aggregateNvv(vesselResults);
+  const rehandles = aggregateRehandles(vesselResults);
+  const yardConnection = yardAvailable ? aggregateYardConnections(vesselResults) : null;
   const snapshotAgeDays = yardAvailable ? daysBetween(yard.snapshotLatest, planningDate) : null;
 
   return {
-    version: 2,
+    version: 3,
     id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     createdAt: new Date().toISOString(),
     terminal,
@@ -664,11 +892,13 @@ export function buildBatchAnalysis({ vessels, yardRecords, terminal, planningDat
     yard,
     nvv,
     rehandles,
+    yardConnection,
     quality: yardAvailable ? {
       snapshotAgeDays,
-      missingFromYard: nvv.notInYard,
-      wrongOrMissingNvv: nvv.wrong + nvv.missing,
-      positionMismatch: nvv.positionMismatch,
+      missingFromYard: yardConnection.notInYard,
+      wrongOrMissingYardNvv: yardConnection.wrong + yardConnection.missing,
+      wrongOrMissingNvv: yardConnection.wrong + yardConnection.missing,
+      positionMismatch: yardConnection.positionMismatch,
       missingNvvFcl: yard.missingNvvFcl,
       duplicateYardUnits: yard.duplicateCount,
       nonStackPositions: yard.nonStackPositions,
@@ -696,31 +926,14 @@ function daysBetween(dateA, dateB) {
 }
 
 export function buildAnalysis({ yardRecords, wiRecords, terminal, planningDate, shortSteaming, sourceFiles }) {
-  const yard = analyzeYard(yardRecords);
-  const nvv = crossCheckNvv(yardRecords, wiRecords);
-  const rehandles = calculateRehandles(yardRecords, wiRecords);
-  const snapshotAgeDays = daysBetween(yard.snapshotLatest, planningDate);
-
-  return {
-    id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    createdAt: new Date().toISOString(),
+  const analysis = buildBatchAnalysis({
+    vessels: [{ id: "vessel-1", fileName: sourceFiles?.wi || "Work List", wiRecords, shortSteaming }],
+    yardRecords: yardRecords || [],
     terminal,
     planningDate,
-    shortSteaming: Boolean(shortSteaming),
-    sourceFiles: sourceFiles || {},
-    yard,
-    nvv,
-    rehandles,
-    quality: {
-      snapshotAgeDays,
-      missingFromYard: nvv.notInYard,
-      wrongOrMissingNvv: nvv.wrong + nvv.missing,
-      positionMismatch: nvv.positionMismatch,
-      missingNvvFcl: yard.missingNvvFcl,
-      duplicateYardUnits: yard.duplicateCount,
-      nonStackPositions: yard.nonStackPositions,
-    },
-  };
+    sourceFiles,
+  });
+  return { ...analysis, shortSteaming: Boolean(shortSteaming) };
 }
 
 export function compactHistoryRecord(analysis) {
