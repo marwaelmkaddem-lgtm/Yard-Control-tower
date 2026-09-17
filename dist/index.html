@@ -1,340 +1,114 @@
 <!doctype html>
 <html lang="en" data-theme="light">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Batch vessel planning, WI-based NVV and potential rehandle control, plus optional Yard Inventory analytics." />
-    <meta name="color-scheme" content="light dark" />
-    <meta name="referrer" content="no-referrer" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'" />
-    <title>Vessel & Yard Control Tower</title>
-    <link rel="stylesheet" href="./styles.css" />
-    <script defer src="./vendor/xlsx.mini.min.js"></script>
-    <script type="module" src="./app.js"></script>
-  </head>
-  <body>
-    <header class="terminal-header">
-      <div class="header-grid" aria-hidden="true"></div>
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
-        <div>
-          <p class="eyebrow header-eyebrow">Terminal planning control</p>
-          <h1>Vessel &amp; Yard Control</h1>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Planning Excellence Center for vessel planning, NVV, rehandle and yard intelligence." />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'" />
+  <title>Planning Excellence Center</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script defer src="./vendor/xlsx.mini.min.js"></script>
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-wrap">
+      <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div><p class="eyebrow">Terminal planning control</p><h1>Planning Excellence Center</h1></div>
+    </div>
+    <div class="header-actions">
+      <span class="privacy-pill"><b>Local processing</b><small>Files stay on this device</small></span>
+      <button id="themeToggle" class="icon-button" type="button" aria-label="Switch theme"><span id="themeIcon">☼</span><span id="themeLabel">Dark</span></button>
+    </div>
+  </header>
+
+  <section class="global-filter-shell" aria-label="Global scope filters">
+    <div class="global-filter-bar">
+      <div class="scope-copy"><p class="eyebrow">Global scope</p><strong>Filter every workspace</strong></div>
+      <label class="compact-field"><span>Terminal</span><select id="globalTerminal"><option value="all">All terminals</option></select></label>
+      <label class="compact-field"><span>Planner</span><select id="globalPlanner"><option value="all">All planners</option></select></label>
+      <label class="compact-field"><span>Vessel</span><select id="globalVessel"><option value="all">All vessels</option></select></label>
+      <button id="clearGlobalFilters" class="text-button" type="button">Reset filters</button>
+    </div>
+  </section>
+
+  <main class="app-shell">
+    <section class="upload-grid" aria-label="Data inputs">
+      <article class="setup-card planning-upload">
+        <div class="section-heading"><div><p class="eyebrow">Vessel planning</p><h2>Planning batch</h2><p>Upload one or more Vessel Work Lists. Planner, NVV and rehandle controls run from WI only.</p></div><span class="context-pill" id="planningSetupStatus">Select terminal</span></div>
+        <div class="setup-form">
+          <label class="field"><span>Terminal</span><select id="terminalSelect"><option value="" selected disabled>Select terminal</option><option>MAMED</option><option>MAPTM</option><option>OMSLL</option><option>SCCT</option><option>HRRJK</option><option>NGAPP</option><option>BHKBS</option><option>LRMLW</option><option>DKAAR</option><option>ITVAD</option><option>JOAQJ</option><option>NGONN</option><option>SEGOT</option></select></label>
+          <label class="field"><span>Planning date</span><input id="planningDate" type="date" /></label>
+          <label class="drop-zone" id="wiDrop" for="wiFile"><input id="wiFile" type="file" accept=".txt,.tsv,.csv,.xls,.xlsx" multiple /><span class="file-icon">≣</span><span><strong>Choose Work Lists</strong><small id="wiFileName">TXT, CSV, TSV, XLS or XLSX · multiple files</small></span><span class="file-state" id="wiState">Required</span></label>
+          <button class="primary-button" id="runPlanningButton" type="button" disabled>Analyze planning batch</button>
         </div>
-      </div>
-      <div class="terminal-signal" aria-hidden="true">
-        <span class="signal-rail"></span>
-        <span class="signal-block b1"></span>
-        <span class="signal-block b2"></span>
-        <span class="signal-block b3"></span>
-        <span class="signal-block b4"></span>
-      </div>
-      <div class="header-actions">
-        <div class="workspace-status">
-          <span class="status-dot"></span>
-          <span><strong>Public control workspace</strong><small>Local history · Files stay on this device</small></span>
+        <div class="source-status" id="planningStatus">Work Lists calculate planner moves, NVV and potential rehandles.</div>
+        <section class="vessel-setup" id="vesselSetup" hidden><div class="vessel-setup-heading"><div><p class="eyebrow">Vessels detected</p><h3>Set Short Steaming manually</h3></div><span id="vesselSetupCount"></span></div><div id="vesselSetupList"></div></section>
+      </article>
+
+      <article class="setup-card yard-upload">
+        <div class="section-heading"><div><p class="eyebrow">Yard intelligence</p><h2>Yard snapshot</h2><p>Upload Yard Inventory independently. It never changes planner/NVV calculations.</p></div><span class="context-pill" id="yardSetupStatus">Optional</span></div>
+        <div class="setup-form">
+          <label class="field"><span>Terminal</span><select id="yardTerminalSelect"><option value="" selected disabled>Select terminal</option><option>MAMED</option><option>MAPTM</option><option>OMSLL</option><option>SCCT</option><option>HRRJK</option><option>NGAPP</option><option>BHKBS</option><option>LRMLW</option><option>DKAAR</option><option>ITVAD</option><option>JOAQJ</option><option>NGONN</option><option>SEGOT</option></select></label>
+          <label class="field"><span>Snapshot date</span><input id="yardDate" type="date" /></label>
+          <label class="drop-zone" id="yardDrop" for="yardFile"><input id="yardFile" type="file" accept=".xlsx,.xls,.csv" /><span class="file-icon">▦</span><span><strong>Choose Yard Inventory</strong><small id="yardFileName">XLS, XLSX or CSV</small></span><span class="file-state" id="yardState">Optional</span></label>
+          <button class="primary-button secondary-accent" id="runYardButton" type="button" disabled>Analyze yard snapshot</button>
         </div>
-        <button class="theme-button" id="themeToggle" type="button" aria-label="Switch to dark mode">
-          <span class="theme-symbol" aria-hidden="true">☼</span>
-          <span id="themeLabel">Dark</span>
-        </button>
-      </div>
-    </header>
+        <div class="source-status" id="yardStatus">Yard Inventory provides terminal-wide population, dwell, block and outbound-visit intelligence.</div>
+      </article>
+    </section>
 
-    <main class="app-shell">
-      <section class="setup-card" aria-labelledby="setupTitle">
-        <div class="section-heading setup-heading">
-          <div>
-            <p class="eyebrow">New planning batch</p>
-            <h2 id="setupTitle">Upload Vessel Work Lists</h2>
-          </div>
-          <div class="setup-heading-actions">
-            <span class="context-pill" id="setupStatus">Select terminal</span>
-            <button class="text-button" id="resetButton" type="button">Reset</button>
-          </div>
-        </div>
+    <nav class="workspace-tabs" aria-label="Planning Excellence workspaces">
+      <button class="tab-button active" data-tab="overview" type="button">Overview</button>
+      <button class="tab-button" data-tab="planner" type="button">Planner Performance</button>
+      <button class="tab-button" data-tab="nvv" type="button">NVV &amp; Data Accuracy <span id="nvvTabCount">—</span></button>
+      <button class="tab-button" data-tab="rehandles" type="button">Rehandle Control <span id="rehandleTabCount">—</span></button>
+      <button class="tab-button" data-tab="yard" type="button">Yard Intelligence</button>
+      <button class="tab-button" data-tab="history" type="button">History &amp; Reports</button>
+      <button class="tab-button" data-tab="rules" type="button">Settings &amp; Rules</button>
+    </nav>
 
-        <div class="setup-grid">
-          <label class="field">
-            <span>Terminal</span>
-            <select id="terminalSelect">
-              <option value="" selected disabled>Select terminal</option>
-              <option value="MAMED">MAMED</option>
-              <option value="MAPTM">MAPTM</option>
-              <option value="OMSLL">OMSLL</option>
-              <option value="SCCT">SCCT</option>
-              <option value="HRRJK">HRRJK</option>
-              <option value="NGAPP">NGAPP</option>
-              <option value="BHKBS">BHKBS</option>
-              <option value="LRMLW">LRMLW</option>
-              <option value="DKAAR">DKAAR</option>
-              <option value="ITVAD">ITVAD</option>
-              <option value="JOAQJ">JOAQJ</option>
-              <option value="NGONN">NGONN</option>
-              <option value="SEGOT">SEGOT</option>
-            </select>
-          </label>
-
-          <label class="field">
-            <span>Planning date</span>
-            <input id="planningDate" type="date" />
-          </label>
-
-          <label class="drop-zone wi-zone" id="wiDrop" for="wiFile">
-            <input id="wiFile" type="file" accept=".txt,.tsv,.csv,.xls,.xlsx" multiple />
-            <span class="file-icon" aria-hidden="true">≣</span>
-            <span class="drop-copy">
-              <strong>Choose work lists</strong>
-              <small id="wiFileName">TXT, CSV, TSV, XLS or XLSX · multiple files</small>
-            </span>
-            <span class="file-state required" id="wiState">Required</span>
-          </label>
-
-          <label class="drop-zone yard-zone" id="yardDrop" for="yardFile">
-            <input id="yardFile" type="file" accept=".xlsx,.xls,.csv" />
-            <span class="file-icon" aria-hidden="true">▦</span>
-            <span class="drop-copy">
-              <strong>Yard inventory</strong>
-              <small id="yardFileName">Optional · adds yard inventory cross-checks</small>
-            </span>
-            <span class="file-state optional" id="yardState">Optional</span>
-          </label>
-
-          <button class="primary-button" id="runButton" type="button" disabled>
-            <span class="button-label">Analyze &amp; save batch</span>
-            <span class="button-loader" aria-hidden="true"></span>
-          </button>
-        </div>
-
-        <div class="source-status" id="sourceStatus" role="status">
-          Work Lists calculate planner moves, NVV and potential rehandles. Yard Inventory is optional and has its own view.
-        </div>
-
-        <section class="vessel-setup" id="vesselSetup" hidden aria-labelledby="vesselSetupTitle">
-          <div class="vessel-setup-heading">
-            <div>
-              <p class="eyebrow">Vessels detected</p>
-              <h3 id="vesselSetupTitle">Set short steaming vessel by vessel</h3>
-            </div>
-            <span id="vesselSetupCount"></span>
-          </div>
-          <div class="vessel-setup-list" id="vesselSetupList"></div>
-        </section>
-      </section>
-
-      <nav class="workspace-tabs" aria-label="Control tower sections">
-        <button class="tab-button active" type="button" data-tab="planner" aria-selected="true">Planner moves</button>
-        <button class="tab-button" type="button" data-tab="analytics" aria-selected="false">Planner analytics</button>
-        <button class="tab-button" type="button" data-tab="nvv" aria-selected="false">NVV / Data Accuracy <span id="nvvTabCount">—</span></button>
-        <button class="tab-button" type="button" data-tab="rehandles" aria-selected="false">Rehandles <span id="rehandleTabCount">—</span></button>
-        <button class="tab-button" type="button" data-tab="yard" aria-selected="false">Yard inventory</button>
-        <button class="tab-button" type="button" data-tab="history" aria-selected="false">History</button>
-        <button class="tab-button" type="button" data-tab="rules" aria-selected="false">Rules</button>
-      </nav>
-
-      <section class="workspace-panels">
-        <div class="tab-panel active" data-panel="planner">
-          <div class="panel-empty" id="plannerEmpty">
-            <span class="empty-icon" aria-hidden="true">▦</span>
-            <h2>No batch analyzed yet</h2>
-            <p>Select a terminal, planning date and one or more Vessel Work Lists to calculate planner and vessel moves.</p>
-          </div>
-
-          <div id="plannerContent" hidden>
-            <div class="result-header">
-              <div>
-                <p class="eyebrow">Planner moves</p>
-                <h2 id="batchTitle">Planning batch</h2>
-                <p id="batchMeta"></p>
-              </div>
-              <div class="result-actions">
-                <button class="secondary-button" id="exportPlannerButton" type="button">Export planner CSV</button>
-                <button class="secondary-button" id="printButton" type="button">Save PDF</button>
-              </div>
-            </div>
-            <div class="kpi-grid six" id="plannerKpis"></div>
-            <div class="analysis-grid planner-grid">
-              <article class="content-card wide-card">
-                <div class="card-heading"><div><p class="eyebrow">Workload by planner</p><h3>Moves handled</h3></div></div>
-                <div class="bar-list large-bars" id="plannerMovesChart"></div>
-              </article>
-              <article class="content-card">
-                <div class="card-heading"><div><p class="eyebrow">Move kind</p><h3>Load and discharge</h3></div></div>
-                <div class="bar-list" id="plannerMoveKindChart"></div>
-              </article>
-              <article class="content-card">
-                <div class="card-heading"><div><p class="eyebrow">Freight kind</p><h3>Full and empty</h3></div></div>
-                <div class="bar-list" id="plannerFreightChart"></div>
-              </article>
-              <article class="content-card">
-                <div class="card-heading"><div><p class="eyebrow">Container length</p><h3>Size mix</h3></div></div>
-                <div class="bar-list" id="plannerLengthChart"></div>
-              </article>
-            </div>
-
-            <div class="section-heading subsection-heading">
-              <div><p class="eyebrow">Vessel view</p><h2>Moves by vessel</h2></div>
-            </div>
-            <div class="vessel-card-grid" id="vesselCardGrid"></div>
-
-            <article class="content-card table-card">
-              <div class="table-toolbar">
-                <div><p class="eyebrow">Combined batch</p><h3>Planner breakdown</h3></div>
-              </div>
-              <div class="table-wrap">
-                <table>
-                  <thead><tr><th>Planner</th><th>Total moves</th><th>Share</th><th>Load</th><th>Discharge</th><th>FCL</th><th>MTY</th><th>20 ft</th><th>40 ft</th><th>45 ft</th><th>Vessels</th></tr></thead>
-                  <tbody id="plannerTableBody"></tbody>
-                </table>
-              </div>
-            </article>
-          </div>
-        </div>
-
-        <div class="tab-panel" data-panel="analytics">
-          <div class="result-header">
-            <div><p class="eyebrow">Saved planning cycles</p><h2>Planner analytics</h2><p id="analyticsMeta">Each cycle is one planner's contribution to one vessel in one saved batch.</p></div>
-            <div class="result-actions analytics-filters">
-              <label class="compact-field"><span>Planner</span><select id="analyticsPlanner"><option value="all">All planners</option></select></label>
-              <label class="compact-field"><span>Terminal</span><select id="analyticsTerminal"><option value="all">All terminals</option></select></label>
-              <label class="compact-field date-filter"><span>From</span><input id="analyticsFrom" type="date" /></label>
-              <label class="compact-field date-filter"><span>To</span><input id="analyticsTo" type="date" /></label>
-            </div>
-          </div>
-          <div class="panel-empty analytics-empty" id="analyticsEmpty">
-            <span class="empty-icon" aria-hidden="true">↗</span>
-            <h2>No planning cycles saved yet</h2>
-            <p>Analyze vessel Work Lists to build each planner's workload and share trend over time.</p>
-          </div>
-          <div id="analyticsContent" hidden>
-            <div class="kpi-grid five" id="analyticsKpis"></div>
-            <div class="analysis-grid analytics-grid">
-              <article class="content-card"><div class="card-heading"><div><p class="eyebrow">Cycle trend</p><h3>Moves per planning cycle</h3></div></div><div id="analyticsMovesTrend"></div></article>
-              <article class="content-card"><div class="card-heading"><div><p class="eyebrow">Workload share</p><h3>Planner share per vessel</h3></div></div><div id="analyticsShareTrend"></div></article>
-              <article class="content-card"><div class="card-heading"><div><p class="eyebrow">Move mix</p><h3>Load and discharge</h3></div></div><div class="bar-list" id="analyticsMoveMix"></div></article>
-              <article class="content-card"><div class="card-heading"><div><p class="eyebrow">Container size</p><h3>Size mix</h3></div></div><div class="bar-list" id="analyticsSizeMix"></div></article>
-            </div>
-            <article class="content-card table-card">
-              <div class="table-toolbar"><div><p class="eyebrow">Cycle history</p><h3>Planner contribution by vessel</h3></div></div>
-              <div class="table-wrap"><table><thead><tr><th>Planning date</th><th>Planner</th><th>Terminal</th><th>Vessel / visit</th><th>Type</th><th>Moves</th><th>Share</th><th>Load</th><th>Discharge</th><th>FCL</th><th>MTY</th></tr></thead><tbody id="analyticsTableBody"></tbody></table></div>
-            </article>
-          </div>
-        </div>
-
-        <div class="tab-panel" data-panel="nvv">
-          <div class="panel-empty" id="nvvEmpty">
-            <span class="empty-icon" aria-hidden="true">NVV</span>
-            <h2>No Work List analyzed yet</h2>
-            <p>NVV is calculated from discharge rows in each vessel Work List; Yard Inventory is not required.</p>
-          </div>
-          <div id="nvvContent" hidden>
-            <div class="result-header">
-              <div><p class="eyebrow">WI discharge control</p><h2>NVV / Data Accuracy</h2><p id="nvvMeta"></p></div>
-              <div class="result-actions">
-                <label class="compact-field"><span>Vessel</span><select id="nvvVesselFilter"></select></label>
-                <button class="secondary-button" id="exportNvvButton" type="button">Export NVV CSV</button>
-              </div>
-            </div>
-            <div class="kpi-grid five" id="nvvKpis"></div>
-            <article class="content-card distribution-card">
-              <div class="card-heading">
-                <div><p class="eyebrow">WI validation result</p><h3>NVV status</h3></div>
-                <span class="score-ring" id="nvvScore">0%</span>
-              </div>
-              <div class="status-distribution" id="nvvDistribution"></div>
-            </article>
-            <article class="content-card table-card">
-              <div class="table-toolbar">
-                <div><p class="eyebrow">Discharge FCL validation</p><h3>NVV detail</h3></div>
-                <div class="filters">
-                  <label class="search-field"><span class="sr-only">Search containers</span><input id="nvvSearch" type="search" placeholder="Search container, POD or NVV" /></label>
-                  <label><span class="sr-only">NVV status</span><select id="nvvFilter"><option value="exceptions">Exceptions only</option><option value="all">All discharge rows</option><option value="valid">All valid</option><option value="valid-import">Valid import</option><option value="valid-transship">Valid transhipment</option><option value="valid-itt">Valid HLC ITT</option><option value="missing-nvv">Missing NVV</option><option value="category-mismatch">Category mismatch</option><option value="outbound-mismatch">Outbound mismatch</option><option value="missing-pod">Missing POD</option><option value="excluded">Excluded MTY / restow</option></select></label>
-                </div>
-              </div>
-              <div class="table-wrap"><table><thead><tr><th>Vessel</th><th>Type</th><th>Container</th><th>Status</th><th>Freight</th><th>Line</th><th>POD</th><th>Category</th><th>Outbound carrier / NVV</th><th>Planner</th><th>Explanation</th></tr></thead><tbody id="nvvTableBody"></tbody></table></div>
-              <div class="pagination" id="nvvPagination"></div>
-            </article>
-          </div>
-        </div>
-
-        <div class="tab-panel" data-panel="rehandles">
-          <div class="panel-empty" id="rehandleEmpty">
-            <span class="empty-icon" aria-hidden="true">RH</span>
-            <h2>No Work List analyzed yet</h2>
-            <p>Potential rehandles are derived from WI current stack/tier and planned load order; Yard Inventory is not required.</p>
-          </div>
-          <div id="rehandleContent" hidden>
-            <div class="result-header">
-              <div><p class="eyebrow">Sequence simulation</p><h2>Potential rehandles</h2><p id="rehandleMeta"></p></div>
-              <div class="result-actions">
-                <label class="compact-field"><span>Vessel</span><select id="rehandleVesselFilter"></select></label>
-                <button class="secondary-button" id="exportRehandleButton" type="button">Export rehandles CSV</button>
-              </div>
-            </div>
-            <div class="kpi-grid four" id="rehandleKpis"></div>
-            <article class="content-card table-card">
-              <div class="table-toolbar">
-                <div><p class="eyebrow">WI stack evidence</p><h3>Potential rehandle list</h3></div>
-                <div class="filters">
-                  <label class="search-field"><span class="sr-only">Search rehandles</span><input id="rehandleSearch" type="search" placeholder="Search target, blocker or stack" /></label>
-                  <label><span class="sr-only">Confidence</span><select id="rehandleFilter"><option value="all">All confidence levels</option><option value="probable">Probable</option><option value="possible">Possible</option></select></label>
-                </div>
-              </div>
-              <div class="table-wrap"><table><thead><tr><th>Vessel</th><th>Type</th><th>Target load</th><th>Blocker</th><th>Stack</th><th>Tier</th><th>Confidence</th><th>Target / blocker time</th><th>Planner</th><th>P.O.W.</th><th>Evidence</th></tr></thead><tbody id="rehandleTableBody"></tbody></table></div>
-              <div class="pagination" id="rehandlePagination"></div>
-            </article>
-          </div>
-        </div>
-
-        <div class="tab-panel" data-panel="yard">
-          <div class="panel-empty" id="yardEmpty">
-            <span class="empty-icon" aria-hidden="true">▥</span>
-            <h2>Yard Inventory is optional</h2>
-            <p>Upload it when available to see the yard population, dwell, ageing, blocks and outbound-visit profile.</p>
-          </div>
-          <div id="yardContent" hidden>
-            <div class="result-header">
-              <div><p class="eyebrow">Independent yard view</p><h2>Yard inventory</h2><p id="yardMeta"></p></div>
-            </div>
-            <div class="kpi-grid six" id="yardKpis"></div>
-            <div class="analysis-grid">
-              <article class="content-card wide-card"><div class="card-heading"><div><p class="eyebrow">Yard exposure</p><h3>Dwell profile</h3></div></div><div class="bar-list" id="dwellChart"></div></article>
-              <article class="content-card"><div class="card-heading"><div><p class="eyebrow">Stack pressure</p><h3>Top blocks</h3></div></div><div class="bar-list" id="blockChart"></div></article>
-              <article class="content-card"><div class="card-heading"><div><p class="eyebrow">Yard mix</p><h3>Category</h3></div></div><div class="bar-list" id="categoryChart"></div></article>
-              <article class="content-card"><div class="card-heading"><div><p class="eyebrow">Yard mix</p><h3>Line operator</h3></div></div><div class="bar-list" id="lineChart"></div></article>
-              <article class="content-card wide-card"><div class="card-heading"><div><p class="eyebrow">Connection profile</p><h3>Top outbound visits</h3></div></div><div class="bar-list" id="outboundChart"></div></article>
-            </div>
-            <div class="section-heading subsection-heading"><div><p class="eyebrow">Source control</p><h2>Data quality</h2></div></div>
-            <div class="quality-grid" id="qualityGrid"></div>
-          </div>
-        </div>
-
-        <div class="tab-panel" data-panel="history">
-          <div class="result-header">
-            <div><p class="eyebrow">Saved on this device</p><h2>Analysis history</h2><p>Planner, NVV and potential-rehandle results come from every saved WI batch. Yard Inventory remains optional.</p></div>
-            <button class="danger-button" id="clearHistoryButton" type="button">Clear history</button>
-          </div>
-          <div class="kpi-grid four" id="historySummary"></div>
-          <article class="content-card table-card">
-            <div class="table-wrap"><table><thead><tr><th>Planning date</th><th>Terminal</th><th>Vessels</th><th>Network / SS</th><th>Planner moves</th><th>NVV exceptions</th><th>Rehandles</th><th></th></tr></thead><tbody id="historyTableBody"></tbody></table></div>
-            <p class="empty-table" id="historyEmpty">No saved analyses yet.</p>
-          </article>
-        </div>
-
-        <div class="tab-panel" data-panel="rules">
-          <div class="rules-grid">
-            <article class="content-card rule-card"><span>01</span><h3>Planner moves</h3><p>Each valid LOAD or DSCH row is assigned to the WI Planner. Batch totals combine all selected Work Lists.</p></article>
-            <article class="content-card rule-card"><span>02</span><h3>Short steaming</h3><p>Short steaming is selected manually for each detected vessel. GEN_CARRIER never marks a vessel as SS.</p></article>
-            <article class="content-card rule-card"><span>03</span><h3>Optional yard</h3><p>Work Lists alone calculate planner KPIs, NVV and potential rehandles. A yard snapshot adds only the independent inventory view and source cross-checks.</p></article>
-            <article class="content-card rule-card"><span>04</span><h3>NVV source</h3><p>Discharge FCL rows use WI POD, Category, Line and Outbound Carrier. MTY and restows are excluded; HLC GEN/Truck transhipments are treated as ITT.</p></article>
-            <article class="content-card rule-card"><span>05</span><h3>Rehandle model</h3><p>Each vessel is evaluated separately using WI current stack/tier and planned load order. Results are Possible or Probable—not confirmed without historical yard evidence.</p></article>
-            <article class="content-card rule-card"><span>06</span><h3>Local processing</h3><p>Files are read inside this browser. History stores calculated results, not the uploaded source files.</p></article>
-          </div>
+    <section class="workspace-panels">
+      <section class="tab-panel active" data-panel="overview">
+        <div class="panel-empty" id="overviewEmpty"><span class="empty-icon">⌁</span><h2>No analysis yet</h2><p>Analyze a planning batch, a yard snapshot, or both to open the command center.</p></div>
+        <div id="overviewContent" hidden>
+          <div class="result-header"><div><p class="eyebrow">Command center</p><h2 id="overviewTitle">Current control tower</h2><p id="overviewMeta"></p></div><div class="result-actions"><button id="executiveReportButton" class="secondary-button" type="button">Executive PDF</button><button id="detailedReportButton" class="secondary-button" type="button">Detailed PDF</button></div></div>
+          <div id="overviewScope" class="kpi-grid six"></div>
+          <div class="command-grid"><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Data accuracy</p><h3>NVV network scope</h3></div></div><div id="overviewNvv"></div></article><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Planning quality</p><h3>Rehandle exposure</h3></div></div><div id="overviewRehandles"></div></article><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Yard intelligence</p><h3>Snapshot headline</h3></div></div><div id="overviewYard"></div></article></div>
+          <article class="content-card attention-card"><div class="card-heading"><div><p class="eyebrow">Attention required</p><h3>Priority review queue</h3></div></div><div id="attentionList" class="attention-list"></div></article>
         </div>
       </section>
-    </main>
 
-    <footer class="site-footer"><span>Vessel &amp; Yard Control Tower</span><span>Batch WI analysis · Optional yard control</span></footer>
-    <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  </body>
+      <section class="tab-panel" data-panel="planner">
+        <div class="panel-empty" id="plannerEmpty"><span class="empty-icon">↗</span><h2>No planning batch analyzed</h2><p>Upload Vessel Work Lists to calculate planner workload and planning-cycle trends.</p></div>
+        <div id="plannerContent" hidden><div class="result-header"><div><p class="eyebrow">Planner performance</p><h2>Workload &amp; planning cycles</h2><p id="plannerMeta"></p></div><button id="exportPlannerButton" class="secondary-button" type="button">Export CSV</button></div><div id="plannerKpis" class="kpi-grid six"></div><div class="analysis-grid"><article class="content-card wide-card"><div class="card-heading"><div><p class="eyebrow">Workload</p><h3>Moves handled</h3></div></div><div id="plannerMovesChart" class="bar-list"></div></article><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Move mix</p><h3>Load / discharge</h3></div></div><div id="plannerMoveMix" class="bar-list"></div></article><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Container size</p><h3>Size mix</h3></div></div><div id="plannerSizeMix" class="bar-list"></div></article></div><article class="content-card table-card"><div class="table-toolbar"><div><p class="eyebrow">Filtered batch</p><h3>Planner breakdown</h3></div></div><div class="table-wrap"><table><thead><tr><th>Planner</th><th>Moves</th><th>Share</th><th>Load</th><th>Discharge</th><th>FCL</th><th>MTY</th><th>20</th><th>40</th><th>45</th><th>Vessels</th></tr></thead><tbody id="plannerTableBody"></tbody></table></div></article><div class="section-heading subsection-heading"><div><p class="eyebrow">History trend</p><h2>Planner cycle analytics</h2></div><div class="date-filter-row"><label class="compact-field"><span>From</span><input id="analyticsFrom" type="date" /></label><label class="compact-field"><span>To</span><input id="analyticsTo" type="date" /></label></div></div><div class="analysis-grid"><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Moves</p><h3>Moves per cycle</h3></div></div><div id="analyticsMovesTrend"></div></article><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Share</p><h3>Planner share per vessel</h3></div></div><div id="analyticsShareTrend"></div></article></div><article class="content-card table-card"><div class="table-wrap"><table><thead><tr><th>Date</th><th>Planner</th><th>Terminal</th><th>Vessel</th><th>Type</th><th>Moves</th><th>Share</th></tr></thead><tbody id="analyticsTableBody"></tbody></table></div></article></div>
+      </section>
+
+      <section class="tab-panel" data-panel="nvv">
+        <div class="panel-empty" id="nvvEmpty"><span class="empty-icon">NVV</span><h2>No planning batch analyzed</h2><p>NVV is calculated from WI discharge rows. Short Steaming vessels are diagnostic only and excluded from the combined KPI.</p></div>
+        <div id="nvvContent" hidden><div class="result-header"><div><p class="eyebrow">Vessel command view</p><h2>NVV &amp; Data Accuracy</h2><p id="nvvMeta"></p></div><div class="result-actions"><button id="exportNvvButton" class="secondary-button" type="button">Export CSV</button><button id="nvvReportButton" class="secondary-button" type="button">Selected vessel PDF</button></div></div><div id="nvvSsBanner" class="info-banner" hidden></div><div id="nvvKpis" class="kpi-grid six"></div><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Vessel ranking</p><h3>Exceptions by vessel</h3></div></div><div id="nvvVesselRanking" class="ranking-list"></div></article><div class="analysis-grid"><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Result mix</p><h3>Validation status</h3></div><span id="nvvScore" class="score-ring">0%</span></div><div id="nvvDistribution" class="status-distribution"></div></article><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Exception line</p><h3>Shipping-line breakdown</h3></div></div><div id="nvvLineChart" class="bar-list"></div></article></div><article class="content-card table-card"><div class="table-toolbar"><div><p class="eyebrow">Container drill-down</p><h3>NVV detail</h3></div><div class="filters"><input id="nvvSearch" type="search" placeholder="Search container, POD, NVV" /><select id="nvvStatusFilter"><option value="exceptions">Exceptions only</option><option value="all">All rows</option><option value="valid">Valid</option><option value="missing-nvv">Missing NVV</option><option value="category-mismatch">Category mismatch</option><option value="outbound-mismatch">Outbound mismatch</option><option value="missing-pod">Missing POD</option><option value="excluded">Excluded</option></select></div></div><div class="table-wrap"><table><thead><tr><th>Vessel</th><th>Type</th><th>Container</th><th>Status</th><th>Line</th><th>POD</th><th>Category</th><th>Outbound / NVV</th><th>Planner</th><th>POW</th><th>Reason</th></tr></thead><tbody id="nvvTableBody"></tbody></table></div><div id="nvvPagination" class="pagination"></div></article></div>
+      </section>
+
+      <section class="tab-panel" data-panel="rehandles">
+        <div class="panel-empty" id="rehandleEmpty"><span class="empty-icon">⇅</span><h2>No planning batch analyzed</h2><p>Potential retrieval rehandles are calculated within POW sequence. Cross-POW stack demand is reported separately.</p></div>
+        <div id="rehandleContent" hidden><div class="result-header"><div><p class="eyebrow">WI retrieval sequence</p><h2>Rehandle Control</h2><p id="rehandleMeta"></p></div><button id="exportRehandleButton" class="secondary-button" type="button">Export CSV</button></div><div id="rehandleKpis" class="kpi-grid five"></div><div class="analysis-grid"><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Confidence</p><h3>Same-POW retrieval conflicts</h3></div></div><div id="rehandleConfidenceChart" class="bar-list"></div></article><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Secondary control</p><h3>Cross-POW stack demand</h3></div></div><div id="crossPowSummary"></div></article></div><article class="content-card table-card"><div class="table-toolbar"><div><p class="eyebrow">Evidence</p><h3>Potential rehandle detail</h3></div><div class="filters"><input id="rehandleSearch" type="search" placeholder="Search target, blocker, stack" /><select id="rehandleStatusFilter"><option value="all">All confidence</option><option value="probable">Probable</option><option value="possible">Possible</option></select></div></div><div class="table-wrap"><table><thead><tr><th>Vessel</th><th>Target</th><th>Blocker</th><th>Stack</th><th>Tiers</th><th>Confidence</th><th>Target time</th><th>Blocker time</th><th>Planner</th><th>POW</th><th>Evidence</th></tr></thead><tbody id="rehandleTableBody"></tbody></table></div><div id="rehandlePagination" class="pagination"></div></article></div>
+      </section>
+
+      <section class="tab-panel" data-panel="yard">
+        <div class="panel-empty" id="yardEmpty"><span class="empty-icon">▦</span><h2>No Yard Inventory analyzed</h2><p>Use the independent Yard Snapshot upload above.</p></div>
+        <div id="yardContent" hidden><div class="result-header"><div><p class="eyebrow">Terminal-wide snapshot</p><h2>Yard Intelligence</h2><p id="yardMeta"></p></div><button id="yardReportButton" class="secondary-button" type="button">Yard PDF</button></div><div class="info-banner">Yard population is terminal-wide. Planner and vessel filters apply only to WI-linked cross-checks; they do not change terminal population totals.</div><div class="subtabs" id="yardSubtabs"><button class="subtab active" data-yard-view="overview">Overview</button><button class="subtab" data-yard-view="aging">Aging &amp; Dwell</button><button class="subtab" data-yard-view="blocks">Blocks &amp; Position</button><button class="subtab" data-yard-view="outbound">Outbound Visits</button><button class="subtab" data-yard-view="attention">Attention</button><button class="subtab" data-yard-view="containers">Container Explorer</button></div><div id="yardKpis" class="kpi-grid six"></div><div id="yardViewOverview" class="yard-subview active"><div class="analysis-grid"><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Dwell</p><h3>Dwell profile</h3></div></div><div id="dwellChart" class="bar-list"></div></article><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Population</p><h3>By line</h3></div></div><div id="lineChart" class="bar-list"></div></article><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Cargo</p><h3>By category</h3></div></div><div id="categoryChart" class="bar-list"></div></article></div></div><div id="yardViewAging" class="yard-subview"><div class="analysis-grid"><article class="content-card wide-card"><div class="card-heading"><div><p class="eyebrow">Aging</p><h3>Age distribution</h3></div></div><div id="agingChart" class="bar-list"></div></article><article class="content-card"><div class="card-heading"><div><p class="eyebrow">Line aging</p><h3>15+ day units</h3></div></div><div id="lineAgingChart" class="bar-list"></div></article></div></div><div id="yardViewBlocks" class="yard-subview"><article class="content-card table-card"><div class="table-toolbar"><div><p class="eyebrow">Population view</p><h3>Blocks</h3></div></div><div class="table-wrap"><table><thead><tr><th>Block</th><th>Units</th><th>FCL</th><th>MTY</th><th>Avg dwell</th><th>15+</th><th>31+</th><th>91+</th></tr></thead><tbody id="blockTableBody"></tbody></table></div></article></div><div id="yardViewOutbound" class="yard-subview"><article class="content-card table-card"><div class="table-toolbar"><div><p class="eyebrow">Outbound readiness</p><h3>Visits</h3></div></div><div class="table-wrap"><table><thead><tr><th>Outbound visit</th><th>Units</th><th>Avg dwell</th><th>Median</th><th>15+</th><th>31+</th><th>91+</th></tr></thead><tbody id="outboundTableBody"></tbody></table></div></article></div><div id="yardViewAttention" class="yard-subview"><div id="yardAttentionList" class="attention-list"></div></div><div id="yardViewContainers" class="yard-subview"><article class="content-card table-card"><div class="table-toolbar"><div><p class="eyebrow">Raw snapshot</p><h3>Container Explorer</h3></div><div class="filters"><input id="yardSearch" type="search" placeholder="Search container, block, visit, POD" /><select id="yardDwellFilter"><option value="all">All dwell</option><option value="15">15+ days</option><option value="31">31+ days</option><option value="91">91+ days</option></select></div></div><div class="table-wrap"><table><thead><tr><th>Container</th><th>Line</th><th>FCL/MTY</th><th>Category</th><th>Type</th><th>POD</th><th>Outbound</th><th>Dwell</th><th>Block</th><th>Position</th></tr></thead><tbody id="yardTableBody"></tbody></table></div><div id="yardPagination" class="pagination"></div></article></div></div>
+      </section>
+
+      <section class="tab-panel" data-panel="history">
+        <div class="result-header"><div><p class="eyebrow">Saved locally</p><h2>History &amp; Reports</h2><p>Filter, reopen, compare and back up historical planning and yard snapshots.</p></div><div class="result-actions"><button id="exportHistoryButton" class="secondary-button" type="button">Export history JSON</button><label class="secondary-button file-button" for="importHistoryFile">Import history JSON<input id="importHistoryFile" type="file" accept=".json" /></label></div></div><div id="historySummary" class="kpi-grid five"></div><article class="content-card compare-card"><div class="card-heading"><div><p class="eyebrow">Snapshot comparison</p><h3>Compare two saved records</h3></div></div><div class="compare-controls"><select id="compareA"></select><span>vs</span><select id="compareB"></select><button id="compareButton" class="primary-button small" type="button">Compare</button></div><div id="compareResult"></div></article><article class="content-card table-card"><div class="table-toolbar"><div><p class="eyebrow">History</p><h3>Saved analyses</h3></div><button id="clearHistoryButton" class="text-button danger-text" type="button">Clear all</button></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Terminal</th><th>Scope</th><th>Headline</th><th>Saved</th><th>Actions</th></tr></thead><tbody id="historyTableBody"></tbody></table></div></article><div class="panel-empty" id="historyEmpty"><span class="empty-icon">◷</span><h2>No history yet</h2><p>Completed analyses will be stored locally in this browser.</p></div></section>
+
+      <section class="tab-panel" data-panel="rules"><div class="result-header"><div><p class="eyebrow">Calculation governance</p><h2>Settings &amp; Rules</h2><p>Authoritative logic used by this version.</p></div></div><div class="rules-grid"><article class="content-card"><h3>Short Steaming</h3><p>Manual vessel-level Yes/No only. No field, including GEN_CARRIER, can classify Short Steaming automatically.</p><p>SS vessels remain available for diagnostics but are excluded from combined NVV KPI numerator and denominator.</p></article><article class="content-card"><h3>NVV</h3><p>NVV applies to discharge FCL. MTY and restow are excluded. Import requires local POD + Import category + GEN_TRUCK. HLC ITT may use GEN/Truck routing with Transship category and local POD. Normal transshipment requires non-local POD + Transship + specific next-vessel visit.</p></article><article class="content-card"><h3>Rehandles</h3><p>WI potential rehandles are evaluated within the same POW using current stack/tier plus planned move time, queue and sequence. Different-POW stack interactions are shown separately as cross-POW demand.</p></article><article class="content-card"><h3>Yard</h3><p>Yard Inventory is independent. Without a capacity denominator this tool reports population, not Yard Occupancy %. FCL without Outbound Visit is a yard data-completeness indicator, not the WI NVV KPI.</p></article></div></section>
+    </section>
+  </main>
+
+  <section id="printReport" class="print-report" aria-hidden="true"></section>
+  <div id="toast" class="toast" role="status"></div>
+</body>
 </html>
