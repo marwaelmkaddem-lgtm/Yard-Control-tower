@@ -1,1284 +1,291 @@
 import {
-  buildBatchAnalysis,
+  buildPlanningAnalysis,
+  buildYardSnapshot,
   cleanText,
   compactHistoryRecord,
   normalizeHeader,
   normalizeWiRows,
   normalizeYardRows,
   parseDelimitedText,
-  vesselIdentity,
+  summarizeNvvRows,
 } from "./engine.js";
 
-const TERMINALS = ["MAMED", "MAPTM", "OMSLL", "SCCT", "HRRJK", "NGAPP", "BHKBS", "LRMLW", "DKAAR", "ITVAD", "JOAQJ", "NGONN", "SEGOT"];
+const TERMINALS = ["MAMED","MAPTM","OMSLL","SCCT","HRRJK","NGAPP","BHKBS","LRMLW","DKAAR","ITVAD","JOAQJ","NGONN","SEGOT"];
 const PAGE_SIZE = 50;
 const state = {
-  yardFile: null,
-  wiFiles: [],
-  preparedVessels: [],
-  analysis: null,
-  preparingFiles: false,
-  loading: false,
-  nvvPage: 1,
-  rehandlePage: 1,
-  historyRecords: [],
+  wiFiles: [], preparedVessels: [], yardFile: null, currentPlanning: null, currentYard: null,
+  historyRecords: [], loadingPlanning: false, loadingYard: false,
+  nvvPage: 1, rehandlePage: 1, yardPage: 1, yardView: "overview",
+  globalFilters: { terminal: "all", planner: "all", vessel: "all" },
 };
 
-const elements = Object.fromEntries([
-  "themeToggle", "themeLabel", "terminalSelect", "planningDate", "wiFile", "yardFile", "wiDrop", "yardDrop",
-  "wiFileName", "yardFileName", "wiState", "yardState", "sourceStatus", "setupStatus", "runButton", "resetButton",
-  "vesselSetup", "vesselSetupCount", "vesselSetupList", "plannerEmpty", "plannerContent", "batchTitle", "batchMeta",
-  "plannerKpis", "plannerMovesChart", "plannerMoveKindChart", "plannerFreightChart", "plannerLengthChart",
-  "vesselCardGrid", "plannerTableBody", "exportPlannerButton", "printButton", "nvvTabCount", "rehandleTabCount",
-  "nvvEmpty", "nvvContent", "nvvMeta", "nvvVesselFilter", "nvvKpis", "nvvScore", "nvvDistribution",
-  "nvvSearch", "nvvFilter", "nvvTableBody", "nvvPagination", "exportNvvButton", "rehandleEmpty",
-  "rehandleContent", "rehandleMeta", "rehandleVesselFilter", "rehandleKpis", "rehandleSearch", "rehandleFilter",
-  "rehandleTableBody", "rehandlePagination", "exportRehandleButton", "yardEmpty", "yardContent", "yardMeta",
-  "yardKpis", "dwellChart", "blockChart", "categoryChart", "lineChart", "outboundChart", "qualityGrid",
-  "historySummary", "historyTableBody", "historyEmpty", "clearHistoryButton", "toast",
-  "analyticsMeta", "analyticsPlanner", "analyticsTerminal", "analyticsFrom", "analyticsTo", "analyticsEmpty",
-  "analyticsContent", "analyticsKpis", "analyticsMovesTrend", "analyticsShareTrend", "analyticsMoveMix",
-  "analyticsSizeMix", "analyticsTableBody",
-].map(id => [id, document.getElementById(id)]));
+const ids = [
+  "themeToggle","themeIcon","themeLabel","globalTerminal","globalPlanner","globalVessel","clearGlobalFilters",
+  "terminalSelect","planningDate","wiFile","wiDrop","wiFileName","wiState","runPlanningButton","planningStatus","planningSetupStatus","vesselSetup","vesselSetupCount","vesselSetupList",
+  "yardTerminalSelect","yardDate","yardFile","yardDrop","yardFileName","yardState","runYardButton","yardStatus","yardSetupStatus",
+  "overviewEmpty","overviewContent","overviewTitle","overviewMeta","overviewScope","overviewNvv","overviewRehandles","overviewYard","attentionList","executiveReportButton","detailedReportButton",
+  "plannerEmpty","plannerContent","plannerMeta","plannerKpis","plannerMovesChart","plannerMoveMix","plannerSizeMix","plannerTableBody","exportPlannerButton","analyticsFrom","analyticsTo","analyticsMovesTrend","analyticsShareTrend","analyticsTableBody",
+  "nvvEmpty","nvvContent","nvvMeta","nvvSsBanner","nvvKpis","nvvVesselRanking","nvvScore","nvvDistribution","nvvLineChart","nvvSearch","nvvStatusFilter","nvvTableBody","nvvPagination","nvvTabCount","exportNvvButton","nvvReportButton",
+  "rehandleEmpty","rehandleContent","rehandleMeta","rehandleKpis","rehandleConfidenceChart","crossPowSummary","rehandleSearch","rehandleStatusFilter","rehandleTableBody","rehandlePagination","rehandleTabCount","exportRehandleButton",
+  "yardEmpty","yardContent","yardMeta","yardReportButton","yardSubtabs","yardKpis","dwellChart","lineChart","categoryChart","agingChart","lineAgingChart","blockTableBody","outboundTableBody","yardAttentionList","yardSearch","yardDwellFilter","yardTableBody","yardPagination",
+  "historySummary","exportHistoryButton","importHistoryFile","compareA","compareB","compareButton","compareResult","clearHistoryButton","historyTableBody","historyEmpty",
+  "printReport","toast",
+];
+const el = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
 
 initialize();
 
-function initialize() {
-  elements.planningDate.value = new Date().toISOString().slice(0, 10);
-  const savedTerminal = localStorage.getItem("yard-control-terminal");
-  if (TERMINALS.includes(savedTerminal)) elements.terminalSelect.value = savedTerminal;
-  const savedTheme = localStorage.getItem("yard-control-theme");
+async function initialize() {
+  const today = new Date().toISOString().slice(0,10);
+  el.planningDate.value = today; el.yardDate.value = today;
+  const savedTheme = localStorage.getItem("planning-excellence-theme");
   const systemDark = globalThis.matchMedia?.("(prefers-color-scheme: dark)").matches;
   applyTheme(savedTheme || (systemDark ? "dark" : "light"));
+  const savedTerminal = localStorage.getItem("planning-excellence-terminal");
+  if (TERMINALS.includes(savedTerminal)) { el.terminalSelect.value = savedTerminal; el.yardTerminalSelect.value = savedTerminal; }
   bindEvents();
-  registerWebMcp();
-  updateRunState();
-  renderHistory();
-}
-
-function registerWebMcp() {
-  const context = document.modelContext;
-  if (!context?.registerTool) return;
-  const reportError = error => console.warn("WebMCP registration failed", error);
-  const tools = [
-    {
-      name: "read_current_control_batch",
-      title: "Read current vessel and yard batch",
-      description: "Return the visible batch, planner, vessel, NVV and rehandle summary.",
-      inputSchema: { type: "object", properties: {}, additionalProperties: false },
-      annotations: { readOnlyHint: true, untrustedContentHint: true },
-      execute() {
-        if (!state.analysis) throw new Error("No analysis is currently open.");
-        const { terminal, planningDate, yardAvailable, vessels, planner, nvv, rehandles } = state.analysis;
-        return {
-          terminal,
-          planningDate,
-          yardAvailable,
-          vessels: vessels.map(vessel => ({
-            name: vessel.name,
-            visit: vessel.visit,
-            shortSteaming: vessel.shortSteaming,
-            totalMoves: vessel.totalMoves,
-          })),
-          plannerMoves: planner.totalMoves,
-          plannerCount: planner.plannerCount,
-          nvvExceptions: nvv?.exceptionCount ?? null,
-          potentialRehandles: rehandles?.count ?? null,
-        };
-      },
-    },
-    {
-      name: "open_control_tower_view",
-      title: "Open a control tower view",
-      description: "Navigate to Planner moves, Planner analytics, NVV, Rehandles, Yard inventory, History or Rules.",
-      inputSchema: {
-        type: "object",
-        properties: { view: { type: "string", enum: ["planner", "analytics", "nvv", "rehandles", "yard", "history", "rules"] } },
-        required: ["view"],
-        additionalProperties: false,
-      },
-      annotations: { readOnlyHint: false, untrustedContentHint: false },
-      execute(input) {
-        const view = input?.view;
-        if (!["planner", "analytics", "nvv", "rehandles", "yard", "history", "rules"].includes(view)) throw new Error("Unsupported view.");
-        activateTab(view);
-        return { openedView: view };
-      },
-    },
-  ];
-  tools.forEach(tool => {
-    try { void Promise.resolve(context.registerTool(tool)).catch(reportError); }
-    catch (error) { reportError(error); }
-  });
+  updateRunStates();
+  await renderHistory();
+  renderAll();
 }
 
 function bindEvents() {
-  elements.themeToggle.addEventListener("click", () => {
-    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-    applyTheme(next);
-    localStorage.setItem("yard-control-theme", next);
-  });
-  elements.terminalSelect.addEventListener("change", () => {
-    localStorage.setItem("yard-control-terminal", elements.terminalSelect.value);
-    updateRunState();
-  });
-  elements.wiFile.addEventListener("change", event => { void prepareWorkLists(event.target.files); });
-  elements.yardFile.addEventListener("change", event => setYardFile(event.target.files?.[0]));
-  configureDropZone(elements.wiDrop, true, files => { void prepareWorkLists(files); });
-  configureDropZone(elements.yardDrop, false, files => setYardFile(files?.[0]));
-  elements.vesselSetupList.addEventListener("click", handleShortSteamingChange);
-  elements.runButton.addEventListener("click", runAnalysis);
-  elements.resetButton.addEventListener("click", resetCurrent);
-  elements.printButton.addEventListener("click", () => window.print());
-  elements.exportPlannerButton.addEventListener("click", exportPlanner);
-  elements.exportNvvButton.addEventListener("click", exportNvv);
-  elements.exportRehandleButton.addEventListener("click", exportRehandles);
-  elements.nvvSearch.addEventListener("input", () => { state.nvvPage = 1; renderNvvTable(); });
-  elements.nvvFilter.addEventListener("change", () => { state.nvvPage = 1; renderNvvTable(); });
-  elements.nvvVesselFilter.addEventListener("change", () => { state.nvvPage = 1; renderNvvWorkspace(); });
-  elements.rehandleSearch.addEventListener("input", () => { state.rehandlePage = 1; renderRehandleTable(); });
-  elements.rehandleFilter.addEventListener("change", () => { state.rehandlePage = 1; renderRehandleTable(); });
-  elements.rehandleVesselFilter.addEventListener("change", () => { state.rehandlePage = 1; renderRehandleWorkspace(); });
-  [elements.analyticsPlanner, elements.analyticsTerminal, elements.analyticsFrom, elements.analyticsTo]
-    .forEach(element => element.addEventListener("change", renderPlannerAnalytics));
-  elements.clearHistoryButton.addEventListener("click", clearHistory);
-  elements.historyTableBody.addEventListener("click", handleHistoryAction);
+  el.themeToggle.addEventListener("click", () => { const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; applyTheme(next); localStorage.setItem("planning-excellence-theme", next); });
+  el.terminalSelect.addEventListener("change", () => { localStorage.setItem("planning-excellence-terminal", el.terminalSelect.value); if (!el.yardTerminalSelect.value) el.yardTerminalSelect.value = el.terminalSelect.value; updateRunStates(); });
+  el.yardTerminalSelect.addEventListener("change", updateRunStates);
+  el.planningDate.addEventListener("change", updateRunStates); el.yardDate.addEventListener("change", updateRunStates);
+  el.wiFile.addEventListener("change", event => void prepareWorkLists(event.target.files));
+  el.yardFile.addEventListener("change", event => setYardFile(event.target.files?.[0]));
+  configureDropZone(el.wiDrop, true, files => void prepareWorkLists(files));
+  configureDropZone(el.yardDrop, false, files => setYardFile(files?.[0]));
+  el.vesselSetupList.addEventListener("click", handleShortSteamingChange);
+  el.runPlanningButton.addEventListener("click", runPlanningAnalysis);
+  el.runYardButton.addEventListener("click", runYardAnalysis);
   document.querySelectorAll(".tab-button").forEach(button => button.addEventListener("click", () => activateTab(button.dataset.tab)));
+  [el.globalTerminal, el.globalPlanner, el.globalVessel].forEach(control => control.addEventListener("change", handleGlobalFilterChange));
+  el.clearGlobalFilters.addEventListener("click", () => { state.globalFilters = { terminal:"all", planner:"all", vessel:"all" }; renderGlobalFilters(); renderAll(); });
+  [el.nvvSearch, el.nvvStatusFilter].forEach(control => control.addEventListener(control.tagName === "INPUT" ? "input" : "change", () => { state.nvvPage = 1; renderNvv(); }));
+  [el.rehandleSearch, el.rehandleStatusFilter].forEach(control => control.addEventListener(control.tagName === "INPUT" ? "input" : "change", () => { state.rehandlePage = 1; renderRehandles(); }));
+  [el.yardSearch, el.yardDwellFilter].forEach(control => control.addEventListener(control.tagName === "INPUT" ? "input" : "change", () => { state.yardPage = 1; renderYardContainerExplorer(); }));
+  [el.analyticsFrom, el.analyticsTo].forEach(control => control.addEventListener("change", renderPlannerAnalytics));
+  el.yardSubtabs.addEventListener("click", event => { const button = event.target.closest("[data-yard-view]"); if (!button) return; state.yardView = button.dataset.yardView; renderYardSubview(); });
+  el.exportPlannerButton.addEventListener("click", exportPlanner);
+  el.exportNvvButton.addEventListener("click", exportNvv);
+  el.exportRehandleButton.addEventListener("click", exportRehandles);
+  el.executiveReportButton.addEventListener("click", () => printReport("executive"));
+  el.detailedReportButton.addEventListener("click", () => printReport("detailed"));
+  el.nvvReportButton.addEventListener("click", () => printReport("nvv"));
+  el.yardReportButton.addEventListener("click", () => printReport("yard"));
+  el.exportHistoryButton.addEventListener("click", exportHistory);
+  el.importHistoryFile.addEventListener("change", event => void importHistory(event.target.files?.[0]));
+  el.compareButton.addEventListener("click", renderComparison);
+  el.historyTableBody.addEventListener("click", handleHistoryAction);
+  el.clearHistoryButton.addEventListener("click", clearHistory);
 }
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   const dark = theme === "dark";
-  elements.themeToggle?.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
-  if (elements.themeLabel) elements.themeLabel.textContent = dark ? "Light" : "Dark";
-  const symbol = elements.themeToggle?.querySelector(".theme-symbol");
-  if (symbol) symbol.textContent = dark ? "☾" : "☼";
+  el.themeIcon.textContent = dark ? "☾" : "☼"; el.themeLabel.textContent = dark ? "Light" : "Dark";
 }
 
 function configureDropZone(zone, multiple, onFiles) {
-  ["dragenter", "dragover"].forEach(eventName => zone.addEventListener(eventName, event => {
-    event.preventDefault();
-    zone.classList.add("dragover");
-  }));
-  ["dragleave", "drop"].forEach(eventName => zone.addEventListener(eventName, event => {
-    event.preventDefault();
-    zone.classList.remove("dragover");
-  }));
-  zone.addEventListener("drop", event => {
-    const files = event.dataTransfer?.files;
-    if (!files?.length) return;
-    onFiles(multiple ? files : [files[0]]);
-  });
+  ["dragenter","dragover"].forEach(name => zone.addEventListener(name, event => { event.preventDefault(); zone.classList.add("dragover"); }));
+  ["dragleave","drop"].forEach(name => zone.addEventListener(name, event => { event.preventDefault(); zone.classList.remove("dragover"); }));
+  zone.addEventListener("drop", event => { const files = event.dataTransfer?.files; if (!files?.length) return; onFiles(multiple ? files : [files[0]]); });
 }
 
 async function prepareWorkLists(fileList) {
-  const files = [...(fileList || [])];
-  if (!files.length) return;
-  state.preparingFiles = true;
-  state.analysis = null;
-  state.wiFiles = files;
-  elements.wiDrop.classList.add("ready");
-  elements.wiFileName.textContent = `Reading ${files.length} file${files.length === 1 ? "" : "s"}…`;
-  elements.wiState.textContent = "Reading";
-  updateRunState();
-
-  const previousSelection = new Map(state.preparedVessels.map(vessel => [vessel.fileName, vessel.shortSteaming]));
+  const files = [...(fileList || [])]; if (!files.length) return;
+  state.wiFiles = files; el.wiDrop.classList.add("ready"); el.wiFileName.textContent = `Reading ${files.length} file${files.length === 1 ? "" : "s"}…`; el.wiState.textContent = "Reading"; updateRunStates();
+  const prior = new Map(state.preparedVessels.map(v => [v.fileName, v.shortSteaming]));
   try {
-    const prepared = await Promise.all(files.map(async (file, index) => {
-      const raw = await readWiFile(file);
-      const wiRecords = normalizeWiRows(raw.rows);
-      const moves = wiRecords.filter(record => record.unit && ["LOAD", "DSCH"].includes(record.kind));
-      if (!moves.length) throw new Error(`${file.name}: no valid LOAD or DSCH rows were found.`);
-      const identity = vesselIdentity(moves, fileStem(file.name));
-      return {
-        id: `vessel-${index + 1}`,
-        fileName: file.name,
-        fileSize: file.size,
-        sheetName: raw.sheetName || "",
-        wiRecords,
-        name: identity.name,
-        visit: identity.visit,
-        multipleVisits: identity.multipleVisits,
-        totalMoves: moves.length,
-        loads: moves.filter(record => record.kind === "LOAD").length,
-        discharges: moves.filter(record => record.kind === "DSCH").length,
-        shortSteaming: previousSelection.get(file.name) || false,
-      };
+    const prepared = await Promise.all(files.map(async (file,index) => {
+      const raw = await readWiFile(file); const wiRecords = normalizeWiRows(raw.rows); const moves = wiRecords.filter(r => r.unit && ["LOAD","DSCH"].includes(r.kind));
+      if (!moves.length) throw new Error(`${file.name}: no valid LOAD or DSCH rows found.`);
+      const identity = vesselIdentityLocal(moves, fileStem(file.name));
+      return { id:`vessel-${index+1}`, fileName:file.name, fileSize:file.size, sheetName:raw.sheetName || "", wiRecords, name:identity.name, visit:identity.visit, multipleVisits:identity.multipleVisits, totalMoves:moves.length, loads:moves.filter(r=>r.kind==="LOAD").length, discharges:moves.filter(r=>r.kind==="DSCH").length, shortSteaming:prior.get(file.name) || false };
     }));
-    state.preparedVessels = prepared;
-    elements.wiFileName.textContent = `${files.length} Work List${files.length === 1 ? "" : "s"} selected`;
-    elements.wiState.textContent = `${files.length} ready`;
-    renderVesselSetup();
-    showToast(`${files.length} vessel${files.length === 1 ? "" : "s"} detected.`);
+    state.preparedVessels = prepared; el.wiFileName.textContent = `${prepared.length} Work List${prepared.length===1?"":"s"} selected`; el.wiState.textContent = `${prepared.length} ready`; renderVesselSetup(); showToast(`${prepared.length} vessel${prepared.length===1?"":"s"} detected.`);
   } catch (error) {
-    console.error(error);
-    state.preparedVessels = [];
-    elements.wiDrop.classList.remove("ready");
-    elements.wiFileName.textContent = "TXT, CSV, TSV, XLS or XLSX · multiple files";
-    elements.wiState.textContent = "Check files";
-    elements.vesselSetup.hidden = true;
-    elements.sourceStatus.textContent = error.message || "The Work Lists could not be read.";
-    showToast(error.message || "The Work Lists could not be read.");
-  } finally {
-    state.preparingFiles = false;
-    updateRunState();
+    console.error(error); state.preparedVessels = []; el.wiDrop.classList.remove("ready"); el.wiState.textContent = "Check files"; el.planningStatus.textContent = error.message || "Work Lists could not be read."; el.vesselSetup.hidden = true;
   }
+  updateRunStates();
 }
 
 function setYardFile(file) {
-  if (!file) return;
-  state.yardFile = file;
-  state.analysis = null;
-  elements.yardDrop.classList.add("ready");
-  elements.yardFileName.textContent = file.name;
-  elements.yardState.textContent = formatBytes(file.size);
-  updateRunState();
+  state.yardFile = file || null;
+  if (file) { el.yardDrop.classList.add("ready"); el.yardFileName.textContent = file.name; el.yardState.textContent = formatBytes(file.size); }
+  else { el.yardDrop.classList.remove("ready"); el.yardFileName.textContent = "XLS, XLSX or CSV"; el.yardState.textContent = "Optional"; }
+  updateRunStates();
 }
 
 function renderVesselSetup() {
-  elements.vesselSetup.hidden = !state.preparedVessels.length;
-  elements.vesselSetupCount.textContent = `${state.preparedVessels.length} vessel${state.preparedVessels.length === 1 ? "" : "s"}`;
-  elements.vesselSetupList.innerHTML = state.preparedVessels.map((vessel, index) => `
-    <article class="vessel-setup-row">
-      <div class="vessel-identity">
-        <span class="vessel-index">${index + 1}</span>
-        <span><strong>${escapeHtml(vessel.name)}</strong><small>${escapeHtml(vessel.visit)} · ${formatNumber(vessel.totalMoves)} moves${vessel.multipleVisits ? " · check: multiple visits found" : ""}</small></span>
-      </div>
-      <div class="ss-control" role="group" aria-label="Short steaming for ${escapeHtml(vessel.name)}">
-        <span>Short steaming</span>
-        <div class="segmented-control" data-vessel-id="${vessel.id}">
-          <button type="button" data-short-steaming="false" aria-pressed="${String(!vessel.shortSteaming)}" class="${vessel.shortSteaming ? "" : "active"}">No</button>
-          <button type="button" data-short-steaming="true" aria-pressed="${String(vessel.shortSteaming)}" class="${vessel.shortSteaming ? "active" : ""}">Yes</button>
-        </div>
-      </div>
-    </article>
-  `).join("");
+  el.vesselSetup.hidden = !state.preparedVessels.length; el.vesselSetupCount.textContent = `${state.preparedVessels.length} vessel${state.preparedVessels.length===1?"":"s"}`;
+  el.vesselSetupList.innerHTML = state.preparedVessels.map((v,index) => `<article class="vessel-setup-row"><div class="vessel-identity"><span class="vessel-index">${index+1}</span><span><strong>${escapeHtml(v.name)}</strong><small>${escapeHtml(v.visit)} · ${formatNumber(v.totalMoves)} moves${v.multipleVisits?" · check multiple visits":""}</small></span></div><div class="ss-control"><span>Short Steaming</span><div class="segmented-control" data-vessel-id="${v.id}"><button data-ss="false" type="button" class="${v.shortSteaming?"":"active"}">No</button><button data-ss="true" type="button" class="${v.shortSteaming?"active":""}">Yes</button></div></div></article>`).join("");
 }
 
 function handleShortSteamingChange(event) {
-  const button = event.target.closest("button[data-short-steaming]");
-  if (!button) return;
-  const control = button.closest("[data-vessel-id]");
-  const vessel = state.preparedVessels.find(item => item.id === control?.dataset.vesselId);
-  if (!vessel) return;
-  vessel.shortSteaming = button.dataset.shortSteaming === "true";
-  renderVesselSetup();
-  if (state.analysis) elements.sourceStatus.textContent = "Short-steaming selection changed. Analyze again to save the updated batch.";
+  const button = event.target.closest("button[data-ss]"); if (!button) return;
+  const vessel = state.preparedVessels.find(v => v.id === button.closest("[data-vessel-id]")?.dataset.vesselId); if (!vessel) return;
+  vessel.shortSteaming = button.dataset.ss === "true"; renderVesselSetup(); el.planningStatus.textContent = "Short Steaming selection changed. Analyze again to save the updated batch.";
 }
 
-function updateRunState() {
-  const terminalReady = Boolean(elements.terminalSelect.value);
-  const workListsReady = state.preparedVessels.length > 0;
-  const ready = terminalReady && workListsReady && !state.preparingFiles;
-  elements.runButton.disabled = state.loading || !ready;
-
-  if (state.preparingFiles) {
-    elements.setupStatus.textContent = "Reading Work Lists";
-    return;
-  }
-  if (!terminalReady) elements.setupStatus.textContent = "Select terminal";
-  else if (!workListsReady) elements.setupStatus.textContent = "Add Work Lists";
-  else elements.setupStatus.textContent = `${state.preparedVessels.length} vessel${state.preparedVessels.length === 1 ? "" : "s"} ready`;
-
-  if (!workListsReady) {
-    elements.sourceStatus.textContent = "Work Lists calculate planner moves, NVV and potential rehandles. Yard Inventory is optional.";
-  } else if (state.yardFile) {
-    elements.sourceStatus.textContent = `${state.preparedVessels.length} vessel${state.preparedVessels.length === 1 ? "" : "s"} ready. WI controls and the optional yard view will be included.`;
-  } else {
-    elements.sourceStatus.textContent = `${state.preparedVessels.length} vessel${state.preparedVessels.length === 1 ? "" : "s"} ready. Planner, NVV and rehandle controls can run without Yard Inventory.`;
-  }
+function updateRunStates() {
+  const planningReady = Boolean(el.terminalSelect.value && el.planningDate.value && state.preparedVessels.length && !state.loadingPlanning);
+  el.runPlanningButton.disabled = !planningReady; el.planningSetupStatus.textContent = !el.terminalSelect.value ? "Select terminal" : !state.preparedVessels.length ? "Add Work Lists" : `${state.preparedVessels.length} vessel${state.preparedVessels.length===1?"":"s"} ready`;
+  const yardReady = Boolean(el.yardTerminalSelect.value && el.yardDate.value && state.yardFile && !state.loadingYard);
+  el.runYardButton.disabled = !yardReady; el.yardSetupStatus.textContent = !el.yardTerminalSelect.value ? "Select terminal" : !state.yardFile ? "Add snapshot" : "Ready";
 }
 
-async function runAnalysis() {
-  if (!elements.terminalSelect.value || !state.preparedVessels.length) return;
-  setLoading(true);
-  elements.sourceStatus.textContent = state.yardFile
-    ? "Calculating WI planner, NVV and rehandle controls plus the yard view…"
-    : "Calculating WI planner, NVV and potential rehandle controls…";
+async function runPlanningAnalysis() {
+  if (el.runPlanningButton.disabled) return; state.loadingPlanning = true; updateRunStates(); el.planningStatus.textContent = "Calculating planner, NVV and POW-based rehandle controls…";
   try {
     await nextFrame();
-    let yardRecords = [];
-    let yardRaw = null;
-    if (state.yardFile) {
-      yardRaw = await readYardFile(state.yardFile);
-      yardRecords = normalizeYardRows(yardRaw.rows);
-      if (!yardRecords.length) throw new Error("No yard containers were found. Check the selected Yard Inventory file.");
-    }
-
-    const analysis = buildBatchAnalysis({
-      vessels: state.preparedVessels,
-      yardRecords,
-      terminal: elements.terminalSelect.value,
-      planningDate: elements.planningDate.value,
-      sourceFiles: {
-        wi: state.preparedVessels.map(vessel => ({ name: vessel.fileName, sheetName: vessel.sheetName })),
-        yard: state.yardFile?.name || null,
-        yardSheet: yardRaw?.sheetName || null,
-      },
-    });
-    state.analysis = analysis;
-    state.nvvPage = 1;
-    state.rehandlePage = 1;
-    renderAnalysis(analysis);
-    try {
-      await saveHistory(compactHistoryRecord(analysis));
-      await renderHistory();
-      showToast("Batch analyzed and saved in local history.");
-    } catch (historyError) {
-      console.warn(historyError);
-      showToast("Batch analyzed. Local history could not be saved on this device.");
-    }
-    elements.sourceStatus.textContent = analysis.yardAvailable
-      ? `${formatNumber(analysis.planner.totalMoves)} WI moves and ${formatNumber(analysis.yard.total)} optional yard units processed.`
-      : `${formatNumber(analysis.planner.totalMoves)} WI moves processed, including NVV and potential rehandles.`;
-  } catch (error) {
-    console.error(error);
-    elements.sourceStatus.textContent = error.message || "The batch could not be analyzed.";
-    showToast(error.message || "The batch could not be analyzed.");
-  } finally {
-    setLoading(false);
-  }
+    const analysis = buildPlanningAnalysis({ vessels:state.preparedVessels, terminal:el.terminalSelect.value, planningDate:el.planningDate.value, sourceFiles:{ wi:state.preparedVessels.map(v=>({name:v.fileName,sheetName:v.sheetName})) } });
+    state.currentPlanning = analysis; await saveHistory(compactHistoryRecord(analysis)); await renderHistory(); syncGlobalFilterDefaults(analysis.terminal); renderAll(); activateTab("overview"); el.planningStatus.textContent = `${formatNumber(analysis.planner.totalMoves)} moves processed across ${analysis.vessels.length} vessels.`; showToast("Planning batch analyzed and saved.");
+  } catch (error) { console.error(error); el.planningStatus.textContent = error.message || "Planning analysis failed."; showToast(el.planningStatus.textContent); }
+  finally { state.loadingPlanning = false; updateRunStates(); }
 }
 
-async function readWiFile(file) {
-  if (/\.(xlsx?|xls)$/i.test(file.name)) return readWorkbookRows(file, "wi");
-  const text = await file.text();
-  return { rows: parseDelimitedText(text, detectDelimiter(text)), sheetName: "" };
-}
-
-async function readYardFile(file) {
-  return readWorkbookRows(file, "yard");
-}
-
-async function readWorkbookRows(file, kind) {
-  if (!globalThis.XLSX) throw new Error("The spreadsheet reader did not load. Refresh the page and try again.");
-  const buffer = await file.arrayBuffer();
-  const workbook = globalThis.XLSX.read(buffer, { type: "array", cellDates: false });
-  const scorer = kind === "yard" ? scoreYardHeader : scoreWiHeader;
-  const minimum = kind === "yard" ? 3 : 2;
-  let best = null;
-  const sheetNames = [...workbook.SheetNames].sort((a, b) => {
-    if (kind !== "yard") return 0;
-    return Number(normalizeHeader(b) === "source data") - Number(normalizeHeader(a) === "source data");
-  });
-  for (const sheetName of sheetNames) {
-    const sheet = workbook.Sheets[sheetName];
-    const matrix = globalThis.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
-    const headerIndex = findHeader(matrix, scorer, minimum);
-    if (headerIndex < 0) continue;
-    const score = scorer(matrix[headerIndex]) + (kind === "yard" && normalizeHeader(sheetName) === "source data" ? 10 : 0);
-    if (!best || score > best.score) best = { sheetName, matrix, headerIndex, score };
-  }
-  if (!best) {
-    throw new Error(kind === "yard"
-      ? "No Yard Inventory sheet was recognized. Required columns include Unit Nbr, O/B Actual Visit and Position."
-      : `${file.name}: no Work List sheet with Kind and Container No. columns was recognized.`);
-  }
-  const headers = best.matrix[best.headerIndex].map(cleanText);
-  const rows = best.matrix.slice(best.headerIndex + 1)
-    .filter(row => row.some(value => cleanText(value)))
-    .map(row => Object.fromEntries(headers.map((header, index) => [header || `Column ${index + 1}`, row[index] ?? ""])));
-  return { rows, sheetName: best.sheetName };
-}
-
-function findHeader(matrix, scorer, minimum) {
-  const max = Math.min(matrix.length, 30);
-  let bestIndex = -1;
-  let bestScore = 0;
-  for (let index = 0; index < max; index += 1) {
-    const score = scorer(matrix[index]);
-    if (score > bestScore) {
-      bestScore = score;
-      bestIndex = index;
-    }
-  }
-  return bestScore >= minimum ? bestIndex : -1;
-}
-
-function scoreYardHeader(row = []) {
-  const headers = row.map(normalizeHeader);
-  const groups = [
-    ["unit nbr", "unit no", "container no"],
-    ["o b actual visit", "ob actual visit", "outbound visit", "nvv"],
-    ["position", "yard position", "current position"],
-    ["frght kind", "freight kind", "sts"],
-    ["category", "cat"],
-  ];
-  return groups.reduce((score, aliases) => score + Number(aliases.some(alias => headers.includes(normalizeHeader(alias)))), 0);
-}
-
-function scoreWiHeader(row = []) {
-  const headers = row.map(normalizeHeader);
-  const groups = [
-    ["kind", "move kind"],
-    ["container no", "container number", "unit nbr"],
-    ["planner"],
-    ["outbound carrier", "outbound visit"],
-  ];
-  return groups.reduce((score, aliases) => score + Number(aliases.some(alias => headers.includes(normalizeHeader(alias)))), 0);
-}
-
-function detectDelimiter(text) {
-  const firstLine = String(text || "").replace(/^\uFEFF/, "").split(/\r?\n/, 1)[0] || "";
-  const candidates = ["\t", ",", ";"].map(delimiter => ({
-    delimiter,
-    count: firstLine.split(delimiter).length - 1,
-  }));
-  candidates.sort((a, b) => b.count - a.count);
-  return candidates[0].count ? candidates[0].delimiter : "\t";
-}
-
-function setLoading(loading) {
-  state.loading = loading;
-  elements.runButton.classList.toggle("loading", loading);
-  elements.runButton.querySelector(".button-label").textContent = loading ? "Analyzing…" : "Analyze & save batch";
-  updateRunState();
-}
-
-function renderAnalysis(analysis) {
-  elements.plannerEmpty.hidden = true;
-  elements.plannerContent.hidden = false;
-  elements.batchTitle.textContent = `${analysis.vessels.length} vessel${analysis.vessels.length === 1 ? "" : "s"} · ${analysis.terminal}`;
-  elements.batchMeta.textContent = `Planning date ${formatDate(analysis.planningDate)} · WI controls${analysis.yardAvailable ? " + optional yard view" : ""} · Run ${formatDateTime(analysis.createdAt)}`;
-  renderPlannerWorkspace(analysis);
-
-  elements.nvvEmpty.hidden = true;
-  elements.nvvContent.hidden = false;
-  elements.rehandleEmpty.hidden = true;
-  elements.rehandleContent.hidden = false;
-  populateVesselFilter(elements.nvvVesselFilter, analysis.vessels);
-  populateVesselFilter(elements.rehandleVesselFilter, analysis.vessels);
-  elements.nvvTabCount.textContent = formatNumber(nvvExceptions(analysis.nvv));
-  elements.rehandleTabCount.textContent = formatNumber(analysis.rehandles?.count || 0);
-  renderNvvWorkspace();
-  renderRehandleWorkspace();
-
-  if (analysis.yardAvailable) {
-    elements.yardEmpty.hidden = true;
-    elements.yardContent.hidden = false;
-    renderYardWorkspace(analysis);
-  } else {
-    elements.yardEmpty.hidden = false;
-    elements.yardContent.hidden = true;
-  }
-  activateTab("planner");
-  document.querySelector(".workspace-tabs")?.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-function renderPlannerWorkspace(analysis) {
-  const planner = analysis.planner;
-  elements.plannerKpis.innerHTML = renderKpiCards([
-    { label: "Total moves", value: planner.totalMoves, note: `${formatNumber(analysis.vessels.length)} vessels`, tone: "neutral" },
-    { label: "Load moves", value: planner.totalLoads, note: formatPercent(planner.totalMoves ? planner.totalLoads / planner.totalMoves : 0), tone: "teal" },
-    { label: "Discharge moves", value: planner.totalDischarges, note: formatPercent(planner.totalMoves ? planner.totalDischarges / planner.totalMoves : 0), tone: "blue" },
-    { label: "Planners", value: planner.plannerCount, note: "WI Planner field", tone: "neutral" },
-    { label: "Network moves", value: planner.networkMoves, note: "SS excluded", tone: "success" },
-    { label: "Short steaming moves", value: planner.shortSteamingMoves, note: "Selected per vessel", tone: planner.shortSteamingMoves ? "warning" : "neutral" },
-  ]);
-  renderBarList(elements.plannerMovesChart, planner.planners.map(row => ({ label: row.planner, value: row.totalMoves })), 14);
-  renderBarList(elements.plannerMoveKindChart, planner.byMoveKind);
-  renderBarList(elements.plannerFreightChart, planner.byFreightKind);
-  renderBarList(elements.plannerLengthChart, planner.byLength);
-  elements.vesselCardGrid.innerHTML = planner.vesselRows.map(vessel => `
-    <article class="vessel-card">
-      <div class="vessel-card-top">
-        <span class="status-badge ${vessel.shortSteaming ? "warning" : "neutral"}">${vessel.shortSteaming ? "Short steaming" : "Network"}</span>
-        <span>${formatNumber(vessel.totalMoves)} moves</span>
-      </div>
-      <h3>${escapeHtml(vessel.name)}</h3>
-      <p>${escapeHtml(vessel.visit)}</p>
-      <div class="vessel-metrics">
-        <span><strong>${formatNumber(vessel.loads)}</strong>Load</span>
-        <span><strong>${formatNumber(vessel.discharges)}</strong>Discharge</span>
-        <span><strong>${formatNumber(vessel.planners.length)}</strong>Planners</span>
-      </div>
-      <small>${escapeHtml(vessel.fileName)}</small>
-    </article>
-  `).join("");
-  elements.plannerTableBody.innerHTML = planner.planners.map(row => `
-    <tr>
-      <td><strong>${escapeHtml(row.planner)}</strong></td>
-      <td>${formatNumber(row.totalMoves)}</td>
-      <td>${formatPercent(row.share)}</td>
-      <td>${formatNumber(row.loads)}</td>
-      <td>${formatNumber(row.discharges)}</td>
-      <td>${formatNumber(row.full)}</td>
-      <td>${formatNumber(row.empty)}</td>
-      <td>${formatNumber(row.size20)}</td>
-      <td>${formatNumber(row.size40)}</td>
-      <td>${formatNumber(row.size45)}</td>
-      <td>${formatNumber(row.vesselCount)}</td>
-    </tr>
-  `).join("") || emptyRow(11, "No planner rows were found.");
-}
-
-function renderNvvWorkspace() {
-  if (!state.analysis?.nvv) return;
-  const summary = selectedVesselSummary("nvv");
-  elements.nvvMeta.textContent = elements.nvvVesselFilter.value === "all"
-    ? `${state.analysis.vessels.length} vessels combined · WI discharge rows · Yard Inventory not required`
-    : vesselLabel(state.analysis.vessels.find(vessel => vessel.id === elements.nvvVesselFilter.value));
-  elements.nvvKpis.innerHTML = renderKpiCards([
-    { label: "FCL evaluated", value: summary.eligibleFcl, note: `${formatNumber(summary.totalDischarges)} discharge rows`, tone: "neutral" },
-    { label: "Valid NVV", value: summary.valid, note: formatPercent(summary.accuracyRate), tone: "success" },
-    { label: "Missing NVV", value: summary.missingNvv, note: "Transhipment next vessel", tone: summary.missingNvv ? "danger" : "success" },
-    { label: "Classification issues", value: summary.classificationIssues, note: "POD, category or outbound", tone: summary.classificationIssues ? "warning" : "success" },
-    { label: "Excluded", value: summary.excludedEmpty + summary.excludedRestow, note: `${formatNumber(summary.excludedEmpty)} MTY · ${formatNumber(summary.excludedRestow)} restow`, tone: "neutral" },
-  ]);
-  elements.nvvScore.textContent = formatPercent(summary.accuracyRate);
-  const distribution = [
-    { label: "Valid import", value: summary.validImport, tone: "success" },
-    { label: "Valid transhipment", value: summary.validTransship, tone: "success" },
-    { label: "Valid HLC ITT", value: summary.validItt, tone: "neutral" },
-    { label: "Exceptions", value: summary.exceptionCount, tone: summary.exceptionCount ? "danger" : "success" },
-  ];
-  elements.nvvDistribution.innerHTML = distribution.map(item => `<div class="status-segment ${item.tone}"><strong>${formatNumber(item.value)}</strong><span>${escapeHtml(item.label)}</span></div>`).join("");
-  renderNvvTable();
-}
-
-function renderNvvTable() {
-  if (!state.analysis?.nvv) return;
-  const vesselId = elements.nvvVesselFilter.value || "all";
-  const query = elements.nvvSearch.value.trim().toUpperCase();
-  const filter = elements.nvvFilter.value;
-  const validStatuses = new Set(["valid-import", "valid-transship", "valid-itt"]);
-  const excludedStatuses = new Set(["excluded-empty", "excluded-restow"]);
-  const rows = state.analysis.nvv.rows.filter(row => {
-    const matchesVessel = vesselId === "all" || row.vesselId === vesselId;
-    const matchesQuery = !query || [row.unit, row.pod, row.outboundCarrier, row.lineOp, row.category, row.planner, row.vesselName, row.vesselVisit]
-      .some(value => cleanText(value).toUpperCase().includes(query));
-    const matchesFilter = filter === "all"
-      || (filter === "exceptions" && !validStatuses.has(row.status) && !excludedStatuses.has(row.status))
-      || (filter === "valid" && validStatuses.has(row.status))
-      || (filter === "excluded" && excludedStatuses.has(row.status))
-      || row.status === filter;
-    return matchesVessel && matchesQuery && matchesFilter;
-  });
-  const page = paginate(rows, state.nvvPage);
-  state.nvvPage = page.current;
-  elements.nvvTableBody.innerHTML = page.rows.map(row => `
-    <tr>
-      <td><strong>${escapeHtml(row.vesselName)}</strong><small class="table-subline">${escapeHtml(row.vesselVisit)}</small></td>
-      <td><span class="status-badge ${row.shortSteaming ? "warning" : "neutral"}">${row.shortSteaming ? "SS" : "Network"}</span></td>
-      <td><strong>${escapeHtml(row.unit)}</strong></td>
-      <td>${statusBadge(row.status)}</td>
-      <td>${valueOrDash(row.freightKind)}</td>
-      <td>${valueOrDash(row.lineOp)}</td>
-      <td>${valueOrDash(row.pod)}</td>
-      <td>${valueOrDash(row.category)}</td>
-      <td>${valueOrDash(row.outboundCarrier)}</td>
-      <td>${valueOrDash(row.planner)}</td>
-      <td class="explanation-cell">${escapeHtml(row.explanation)}</td>
-    </tr>
-  `).join("") || emptyRow(11, "No NVV rows match the current filters.");
-  renderPagination(elements.nvvPagination, page, next => { state.nvvPage = next; renderNvvTable(); });
-}
-
-function renderRehandleWorkspace() {
-  if (!state.analysis?.rehandles) return;
-  const summary = selectedVesselSummary("rehandles");
-  elements.rehandleMeta.textContent = elements.rehandleVesselFilter.value === "all"
-    ? `${state.analysis.vessels.length} vessels evaluated separately from WI current position and load order · not confirmed moves`
-    : vesselLabel(state.analysis.vessels.find(vessel => vessel.id === elements.rehandleVesselFilter.value));
-  elements.rehandleKpis.innerHTML = renderKpiCards([
-    { label: "Potential rehandles", value: summary.count, note: "WI-derived indicator", tone: summary.count ? "warning" : "success" },
-    { label: "Affected targets", value: summary.affectedTargets, note: "Planned load units", tone: summary.affectedTargets ? "warning" : "success" },
-    { label: "Probable", value: summary.probable, note: "Stronger WI sequence evidence", tone: summary.probable ? "danger" : "success" },
-    { label: "Possible", value: summary.possible, note: "Review planning constraints", tone: summary.possible ? "warning" : "success" },
-  ]);
-  renderRehandleTable();
-}
-
-function renderRehandleTable() {
-  if (!state.analysis?.rehandles) return;
-  const vesselId = elements.rehandleVesselFilter.value || "all";
-  const query = elements.rehandleSearch.value.trim().toUpperCase();
-  const filter = elements.rehandleFilter.value;
-  const rows = state.analysis.rehandles.rows.filter(row => {
-    const matchesVessel = vesselId === "all" || row.vesselId === vesselId;
-    const matchesQuery = !query || [row.targetUnit, row.blockerUnit, row.stack, row.targetPlanner, row.targetPow, row.vesselName, row.vesselVisit]
-      .some(value => cleanText(value).toUpperCase().includes(query));
-    const matchesFilter = filter === "all" || row.confidence === filter;
-    return matchesVessel && matchesQuery && matchesFilter;
-  });
-  const page = paginate(rows, state.rehandlePage);
-  state.rehandlePage = page.current;
-  elements.rehandleTableBody.innerHTML = page.rows.map(row => `
-    <tr>
-      <td><strong>${escapeHtml(row.vesselName)}</strong><small class="table-subline">${escapeHtml(row.vesselVisit)}</small></td>
-      <td><span class="status-badge ${row.shortSteaming ? "warning" : "neutral"}">${row.shortSteaming ? "SS" : "Network"}</span></td>
-      <td><strong>${escapeHtml(row.targetUnit)}</strong></td>
-      <td>${escapeHtml(row.blockerUnit)}</td>
-      <td>${escapeHtml(row.stack)}</td>
-      <td>${row.blockerTier} above ${row.targetTier}</td>
-      <td>${statusBadge(row.confidence)}</td>
-      <td>${valueOrDash(row.targetMoveTime)}<small class="table-subline">${escapeHtml(row.blockerMoveTime || "Blocker time unavailable")}</small></td>
-      <td>${valueOrDash(row.targetPlanner)}</td>
-      <td>${valueOrDash(row.targetPow)}</td>
-      <td class="explanation-cell">${escapeHtml(row.explanation)}</td>
-    </tr>
-  `).join("") || emptyRow(11, "No potential rehandles match the current filters.");
-  renderPagination(elements.rehandlePagination, page, next => { state.rehandlePage = next; renderRehandleTable(); });
-}
-
-function renderYardWorkspace(analysis) {
-  const yard = analysis.yard;
-  elements.yardMeta.textContent = `${analysis.sourceFiles.yard || "Uploaded yard file"} · Sheet ${analysis.sourceFiles.yardSheet || "detected automatically"} · Latest movement ${yard.snapshotLatest ? formatDateTime(yard.snapshotLatest) : "unavailable"}`;
-  elements.yardKpis.innerHTML = renderKpiCards([
-    { label: "Total units", value: yard.total, note: `${formatNumber(yard.uniqueUnits)} unique`, tone: "neutral" },
-    { label: "FCL", value: yard.fcl, note: formatPercent(yard.total ? yard.fcl / yard.total : 0), tone: "teal" },
-    { label: "MTY", value: yard.empty, note: formatPercent(yard.total ? yard.empty / yard.total : 0), tone: "blue" },
-    { label: "Median dwell", value: `${formatNumber(yard.medianDwell)} d`, note: `Average ${formatNumber(yard.averageDwell)} d`, tone: "neutral" },
-    { label: "15+ day units", value: yard.aged15, note: `${formatNumber(yard.aged31)} at 31+ days`, tone: yard.aged15 ? "warning" : "success" },
-    { label: "FCL missing NVV", value: yard.missingNvvFcl, note: "MTY excluded", tone: yard.missingNvvFcl ? "danger" : "success" },
-  ]);
-  renderBarList(elements.dwellChart, yard.dwellBuckets.filter(item => item.value > 0));
-  renderBarList(elements.blockChart, yard.blocks.slice(0, 10));
-  renderBarList(elements.categoryChart, yard.categories);
-  renderBarList(elements.lineChart, yard.lines);
-  renderBarList(elements.outboundChart, (yard.outboundVisits || []).slice(0, 12), 12);
-  const quality = analysis.quality;
-  elements.qualityGrid.innerHTML = [
-    { title: "Snapshot age", value: quality.snapshotAgeDays === null ? "n.a." : `${Math.abs(quality.snapshotAgeDays)} d`, note: "Difference from planning date", tone: quality.snapshotAgeDays !== null && Math.abs(quality.snapshotAgeDays) > 1 ? "danger" : "" },
-    { title: "Load units absent", value: quality.missingFromYard, note: "Planned LOAD units not in snapshot", tone: quality.missingFromYard ? "warning" : "" },
-    { title: "Yard visit mismatch", value: quality.wrongOrMissingYardNvv ?? quality.wrongOrMissingNvv, note: "Optional WI load vs yard outbound check", tone: (quality.wrongOrMissingYardNvv ?? quality.wrongOrMissingNvv) ? "danger" : "" },
-    { title: "Position mismatches", value: quality.positionMismatch, note: "WI position differs from yard", tone: quality.positionMismatch ? "warning" : "" },
-    { title: "Duplicate yard units", value: quality.duplicateYardUnits, note: "Repeated container numbers", tone: quality.duplicateYardUnits ? "danger" : "" },
-    { title: "Non-stack positions", value: quality.nonStackPositions, note: "No usable final tier", tone: quality.nonStackPositions ? "warning" : "" },
-  ].map(item => `
-    <article class="quality-card">
-      <div class="quality-marker ${item.tone}"></div>
-      <strong>${typeof item.value === "number" ? formatNumber(item.value) : escapeHtml(item.value)}</strong>
-      <h3>${escapeHtml(item.title)}</h3>
-      <p>${escapeHtml(item.note)}</p>
-    </article>
-  `).join("");
-}
-
-function selectedVesselSummary(type) {
-  const filter = type === "nvv" ? elements.nvvVesselFilter : elements.rehandleVesselFilter;
-  if (!filter.value || filter.value === "all") return state.analysis[type];
-  return state.analysis.vessels.find(vessel => vessel.id === filter.value)?.[type] || state.analysis[type];
-}
-
-function populateVesselFilter(select, vessels) {
-  const current = select.value;
-  select.innerHTML = `<option value="all">All vessels combined</option>${vessels.map(vessel => `<option value="${vessel.id}">${escapeHtml(vessel.name)} · ${escapeHtml(vessel.visit)}${vessel.shortSteaming ? " · SS" : ""}</option>`).join("")}`;
-  if ([...select.options].some(option => option.value === current)) select.value = current;
-}
-
-function renderKpiCards(cards) {
-  return cards.map(card => `
-    <article class="kpi-card ${card.tone || "neutral"}">
-      <span class="kpi-label">${escapeHtml(card.label)}</span>
-      <strong class="kpi-value">${typeof card.value === "number" ? formatNumber(card.value) : escapeHtml(card.value)}</strong>
-      <span class="kpi-note">${escapeHtml(card.note || "")}</span>
-    </article>
-  `).join("");
-}
-
-function renderBarList(container, items = [], limit = 10) {
-  const visible = items.slice(0, limit);
-  const max = Math.max(1, ...visible.map(item => item.value));
-  container.innerHTML = visible.map(item => `
-    <div class="bar-row">
-      <span class="bar-label" title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</span>
-      <span class="bar-track"><span class="bar-fill" style="width:${Math.max(1, (item.value / max) * 100)}%"></span></span>
-      <span class="bar-value">${formatNumber(item.value)}</span>
-    </div>
-  `).join("") || '<p class="muted-cell">No data available.</p>';
-}
-
-function statusBadge(status) {
-  const mapping = {
-    match: ["Matched", "success"],
-    wrong: ["Wrong NVV", "danger"],
-    missing: ["Missing NVV", "warning"],
-    "not-yard": ["Not in yard", "neutral"],
-    external: ["Not on WI", "warning"],
-    "later-wi": ["Planned later", "neutral"],
-    "valid-import": ["Valid import", "success"],
-    "valid-transship": ["Valid transhipment", "success"],
-    "valid-itt": ["Valid HLC ITT", "success"],
-    "missing-nvv": ["Missing NVV", "danger"],
-    "category-mismatch": ["Category mismatch", "warning"],
-    "outbound-mismatch": ["Outbound mismatch", "warning"],
-    "missing-pod": ["Missing POD", "danger"],
-    "excluded-empty": ["Excluded MTY", "neutral"],
-    "excluded-restow": ["Excluded restow", "neutral"],
-    probable: ["Probable", "warning"],
-    possible: ["Possible", "neutral"],
-  };
-  const [label, tone] = mapping[status] || [status, "neutral"];
-  return `<span class="status-badge ${tone}">${escapeHtml(label)}</span>`;
-}
-
-function valueOrDash(value, warn = false) {
-  return value ? `<span class="${warn ? "status-badge warning" : ""}">${escapeHtml(value)}</span>` : '<span class="muted-cell">—</span>';
-}
-
-function emptyRow(columns, message) {
-  return `<tr><td colspan="${columns}" class="muted-cell empty-cell">${escapeHtml(message)}</td></tr>`;
-}
-
-function paginate(rows, requestedPage) {
-  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  const current = Math.min(Math.max(1, requestedPage), totalPages);
-  const start = (current - 1) * PAGE_SIZE;
-  return { rows: rows.slice(start, start + PAGE_SIZE), total: rows.length, totalPages, current, start };
-}
-
-function renderPagination(container, page, onChange) {
-  container.replaceChildren();
-  const label = document.createElement("span");
-  const first = page.total ? page.start + 1 : 0;
-  const last = Math.min(page.start + PAGE_SIZE, page.total);
-  label.textContent = `${formatNumber(first)}–${formatNumber(last)} of ${formatNumber(page.total)}`;
-  const prev = document.createElement("button");
-  prev.type = "button";
-  prev.textContent = "‹";
-  prev.setAttribute("aria-label", "Previous page");
-  prev.disabled = page.current <= 1;
-  prev.addEventListener("click", () => onChange(page.current - 1));
-  const next = document.createElement("button");
-  next.type = "button";
-  next.textContent = "›";
-  next.setAttribute("aria-label", "Next page");
-  next.disabled = page.current >= page.totalPages;
-  next.addEventListener("click", () => onChange(page.current + 1));
-  container.append(label, prev, next);
-}
-
-function activateTab(tab) {
-  document.querySelectorAll(".tab-button").forEach(button => {
-    const active = button.dataset.tab === tab;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", String(active));
-  });
-  document.querySelectorAll(".tab-panel").forEach(panel => panel.classList.toggle("active", panel.dataset.panel === tab));
-  if (tab === "history") void renderHistory();
-  if (tab === "analytics") renderPlannerAnalytics();
-}
-
-function exportPlanner() {
-  if (!state.analysis) return;
-  const rows = state.analysis.planner.planners.map(row => ({
-    Planner: row.planner,
-    "Total Moves": row.totalMoves,
-    "Share %": (row.share * 100).toFixed(1),
-    Load: row.loads,
-    Discharge: row.discharges,
-    FCL: row.full,
-    MTY: row.empty,
-    "20 ft": row.size20,
-    "40 ft": row.size40,
-    "45 ft": row.size45,
-    Vessels: row.vesselCount,
-  }));
-  downloadCsv(rows, `${safeName(state.analysis.terminal)}-${state.analysis.planningDate}-planner-moves.csv`);
-}
-
-function exportNvv() {
-  if (!state.analysis?.nvv) return;
-  const vesselId = elements.nvvVesselFilter.value || "all";
-  const rows = state.analysis.nvv.rows
-    .filter(row => vesselId === "all" || row.vesselId === vesselId)
-    .map(row => ({
-      Vessel: row.vesselName,
-      Visit: row.vesselVisit,
-      Type: row.shortSteaming ? "Short steaming" : "Network",
-      Container: row.unit,
-      Status: statusText(row.status),
-      Freight: row.freightKind,
-      Line: row.lineOp,
-      POD: row.pod,
-      Category: row.category,
-      "Outbound Carrier / NVV": row.outboundCarrier,
-      Planner: row.planner,
-      "P.O.W.": row.pow,
-      Explanation: row.explanation,
-    }));
-  downloadCsv(rows, `${safeName(state.analysis.terminal)}-${state.analysis.planningDate}-wi-nvv.csv`);
-}
-
-function exportRehandles() {
-  if (!state.analysis?.rehandles) return;
-  const vesselId = elements.rehandleVesselFilter.value || "all";
-  const rows = state.analysis.rehandles.rows
-    .filter(row => vesselId === "all" || row.vesselId === vesselId)
-    .map(row => ({
-      Vessel: row.vesselName,
-      Visit: row.vesselVisit,
-      Type: row.shortSteaming ? "Short steaming" : "Network",
-      "Target Load": row.targetUnit,
-      Blocker: row.blockerUnit,
-      Stack: row.stack,
-      "Target Tier": row.targetTier,
-      "Blocker Tier": row.blockerTier,
-      Confidence: statusText(row.confidence),
-      Source: row.source,
-      "Blocker Line": row.blockerLine,
-      "Blocker Category": row.blockerCategory,
-      "Blocker NVV": row.blockerVisit,
-      "Target Move Time": row.targetMoveTime,
-      "Blocker Move Time": row.blockerMoveTime,
-      Planner: row.targetPlanner,
-      "P.O.W.": row.targetPow,
-      Evidence: row.explanation,
-    }));
-  downloadCsv(rows, `${safeName(state.analysis.terminal)}-${state.analysis.planningDate}-potential-rehandles.csv`);
-}
-
-function statusText(status) {
-  return ({
-    match: "Matched",
-    wrong: "Wrong NVV",
-    missing: "Missing NVV",
-    "not-yard": "Not in yard",
-    "valid-import": "Valid import",
-    "valid-transship": "Valid transhipment",
-    "valid-itt": "Valid HLC ITT",
-    "missing-nvv": "Missing NVV",
-    "category-mismatch": "Category mismatch",
-    "outbound-mismatch": "Outbound mismatch",
-    "missing-pod": "Missing POD",
-    "excluded-empty": "Excluded MTY",
-    "excluded-restow": "Excluded restow",
-    probable: "Probable",
-    possible: "Possible",
-  })[status] || status;
-}
-
-function downloadCsv(rows, filename) {
-  if (!rows.length) return showToast("There are no rows to export.");
-  const headers = Object.keys(rows[0]);
-  const csv = [headers, ...rows.map(row => headers.map(header => row[header]))]
-    .map(row => row.map(csvCell).join(","))
-    .join("\r\n");
-  const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 500);
-}
-
-function csvCell(value) {
-  let text = cleanText(value);
-  if (/^[=+\-@]/.test(text)) text = `'${text}`;
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
-function resetCurrent() {
-  state.yardFile = null;
-  state.wiFiles = [];
-  state.preparedVessels = [];
-  state.analysis = null;
-  elements.wiFile.value = "";
-  elements.yardFile.value = "";
-  [elements.wiDrop, elements.yardDrop].forEach(zone => zone.classList.remove("ready", "dragover"));
-  elements.wiFileName.textContent = "TXT, CSV, TSV, XLS or XLSX · multiple files";
-  elements.yardFileName.textContent = "Optional · adds yard inventory cross-checks";
-  elements.wiState.textContent = "Required";
-  elements.yardState.textContent = "Optional";
-  elements.vesselSetup.hidden = true;
-  elements.plannerEmpty.hidden = false;
-  elements.plannerContent.hidden = true;
-  elements.nvvEmpty.hidden = false;
-  elements.nvvContent.hidden = true;
-  elements.rehandleEmpty.hidden = false;
-  elements.rehandleContent.hidden = true;
-  elements.yardEmpty.hidden = false;
-  elements.yardContent.hidden = true;
-  elements.nvvTabCount.textContent = "—";
-  elements.rehandleTabCount.textContent = "—";
-  elements.nvvSearch.value = "";
-  elements.nvvFilter.value = "exceptions";
-  elements.rehandleSearch.value = "";
-  elements.rehandleFilter.value = "all";
-  activateTab("planner");
-  updateRunState();
-}
-
-function openHistoryDb() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("yard-control-tower", 1);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains("runs")) request.result.createObjectStore("runs", { keyPath: "id" });
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function withHistoryStore(mode, callback) {
-  const db = await openHistoryDb();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction("runs", mode);
-    const store = transaction.objectStore("runs");
-    let result;
-    try { result = callback(store); } catch (error) { reject(error); return; }
-    transaction.oncomplete = () => { db.close(); resolve(result?.result); };
-    transaction.onerror = () => { db.close(); reject(transaction.error); };
-  });
-}
-
-function saveHistory(record) { return withHistoryStore("readwrite", store => store.put(record)); }
-
-async function getHistory() {
-  const db = await openHistoryDb();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction("runs", "readonly");
-    const request = transaction.objectStore("runs").getAll();
-    request.onsuccess = () => resolve(request.result.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
-    request.onerror = () => reject(request.error);
-    transaction.oncomplete = () => db.close();
-  });
-}
-
-async function renderHistory() {
+async function runYardAnalysis() {
+  if (el.runYardButton.disabled) return; state.loadingYard = true; updateRunStates(); el.yardStatus.textContent = "Reading yard inventory and building terminal-wide intelligence…";
   try {
-    const rawRecords = await getHistory();
-    const records = rawRecords.map(upgradeLegacyRecord);
-    state.historyRecords = records;
-    const vesselCount = records.reduce((sum, record) => sum + record.vessels.length, 0);
-    const networkCount = records.reduce((sum, record) => sum + record.vessels.filter(vessel => !vessel.shortSteaming).length, 0);
-    const shortSteamingCount = records.reduce((sum, record) => sum + record.vessels.filter(vessel => vessel.shortSteaming).length, 0);
-    const plannerMoves = records.reduce((sum, record) => sum + (record.planner?.totalMoves || 0), 0);
-    elements.historySummary.innerHTML = renderKpiCards([
-      { label: "Saved batches", value: records.length, note: "This browser", tone: "neutral" },
-      { label: "Vessels", value: vesselCount, note: `${formatNumber(networkCount)} network`, tone: "teal" },
-      { label: "Short steaming", value: shortSteamingCount, note: "Selected per vessel", tone: shortSteamingCount ? "warning" : "neutral" },
-      { label: "Planner moves", value: plannerMoves, note: "Across saved batches", tone: "blue" },
-    ]);
-    elements.historyEmpty.hidden = records.length > 0;
-    elements.historyTableBody.innerHTML = records.map(record => {
-      const network = record.vessels.filter(vessel => !vessel.shortSteaming).length;
-      const shortSteaming = record.vessels.length - network;
-      const vesselNames = record.vessels.slice(0, 2).map(vessel => vessel.name).join(", ");
-      const more = record.vessels.length > 2 ? ` +${record.vessels.length - 2}` : "";
-      return `
-        <tr>
-          <td>${escapeHtml(formatDate(record.planningDate))}</td>
-          <td><strong>${escapeHtml(record.terminal)}</strong></td>
-          <td>${escapeHtml(vesselNames || "Unknown vessel")}${escapeHtml(more)}<small class="table-subline">${formatNumber(record.vessels.length)} vessel${record.vessels.length === 1 ? "" : "s"}</small></td>
-          <td>${formatNumber(network)} / ${formatNumber(shortSteaming)}</td>
-          <td>${formatNumber(record.planner?.totalMoves || 0)}</td>
-          <td>${record.nvv ? formatNumber(nvvExceptions(record.nvv)) : '<span class="muted-cell">Legacy</span>'}</td>
-          <td>${record.rehandles ? formatNumber(record.rehandles.count) : '<span class="muted-cell">Legacy</span>'}</td>
-          <td><button class="text-button" type="button" data-history-action="view" data-history-id="${escapeHtml(record.id)}">View</button> <button class="text-button danger-text" type="button" data-history-action="delete" data-history-id="${escapeHtml(record.id)}">Delete</button></td>
-        </tr>
-      `;
-    }).join("");
-    populateAnalyticsFilters(records);
-    renderPlannerAnalytics();
-  } catch (error) {
-    console.warn(error);
-    state.historyRecords = [];
-    elements.historySummary.innerHTML = "";
-    elements.historyEmpty.hidden = false;
-    elements.historyEmpty.textContent = "History is unavailable in this browser.";
-    elements.analyticsEmpty.hidden = false;
-    elements.analyticsContent.hidden = true;
-  }
+    await nextFrame(); const raw = await readYardFile(state.yardFile); const records = normalizeYardRows(raw.rows); if (!records.length) throw new Error("No yard containers were recognized.");
+    const snapshot = buildYardSnapshot({ yardRecords:records, terminal:el.yardTerminalSelect.value, planningDate:el.yardDate.value, sourceFiles:{ yard:state.yardFile.name, yardSheet:raw.sheetName } });
+    state.currentYard = snapshot; await saveHistory(compactHistoryRecord(snapshot)); await renderHistory(); syncGlobalFilterDefaults(snapshot.terminal); renderAll(); activateTab("yard"); el.yardStatus.textContent = `${formatNumber(snapshot.yard.total)} yard units processed.`; showToast("Yard snapshot analyzed and saved.");
+  } catch (error) { console.error(error); el.yardStatus.textContent = error.message || "Yard analysis failed."; showToast(el.yardStatus.textContent); }
+  finally { state.loadingYard = false; updateRunStates(); }
 }
 
-function populateAnalyticsFilters(records) {
-  const cycles = buildPlannerCycles(records);
-  const plannerValue = elements.analyticsPlanner.value;
-  const terminalValue = elements.analyticsTerminal.value;
-  const planners = [...new Set(cycles.map(cycle => cycle.planner))].sort((a, b) => a.localeCompare(b));
-  const terminals = [...new Set(cycles.map(cycle => cycle.terminal))].sort((a, b) => a.localeCompare(b));
-  elements.analyticsPlanner.innerHTML = `<option value="all">All planners</option>${planners.map(planner => `<option value="${escapeHtml(planner)}">${escapeHtml(planner)}</option>`).join("")}`;
-  elements.analyticsTerminal.innerHTML = `<option value="all">All terminals</option>${terminals.map(terminal => `<option value="${escapeHtml(terminal)}">${escapeHtml(terminal)}</option>`).join("")}`;
-  if ([...elements.analyticsPlanner.options].some(option => option.value === plannerValue)) elements.analyticsPlanner.value = plannerValue;
-  if ([...elements.analyticsTerminal.options].some(option => option.value === terminalValue)) elements.analyticsTerminal.value = terminalValue;
+async function readWiFile(file) { if (/\.(xlsx?|xls)$/i.test(file.name)) return readWorkbookRows(file,"wi"); const text=await file.text(); return { rows:parseDelimitedText(text,detectDelimiter(text)), sheetName:"" }; }
+async function readYardFile(file) { return readWorkbookRows(file,"yard"); }
+async function readWorkbookRows(file,kind) {
+  if (!globalThis.XLSX) throw new Error("Spreadsheet reader did not load. Refresh and try again.");
+  const workbook = globalThis.XLSX.read(await file.arrayBuffer(), { type:"array", cellDates:false });
+  const scorer = kind === "yard" ? scoreYardHeader : scoreWiHeader; const minimum = kind === "yard" ? 3 : 2; let best=null;
+  const sheets=[...workbook.SheetNames].sort((a,b)=>kind==="yard"?Number(normalizeHeader(b)==="source data")-Number(normalizeHeader(a)==="source data"):0);
+  for (const sheetName of sheets) { const matrix=globalThis.XLSX.utils.sheet_to_json(workbook.Sheets[sheetName],{header:1,defval:"",raw:false}); const headerIndex=findHeader(matrix,scorer,minimum); if(headerIndex<0) continue; const score=scorer(matrix[headerIndex])+(kind==="yard"&&normalizeHeader(sheetName)==="source data"?10:0); if(!best||score>best.score) best={sheetName,matrix,headerIndex,score}; }
+  if(!best) throw new Error(kind==="yard"?"No Yard Inventory sheet recognized. Required columns include Unit Nbr, Outbound Visit and Position.":`${file.name}: no Work List header recognized.`);
+  const headers=best.matrix[best.headerIndex].map(cleanText); const rows=best.matrix.slice(best.headerIndex+1).filter(r=>r.some(v=>cleanText(v))).map(r=>Object.fromEntries(headers.map((h,i)=>[h||`Column ${i+1}`,r[i]??""]))); return {rows,sheetName:best.sheetName};
+}
+function findHeader(matrix,scorer,minimum){let bestIndex=-1,bestScore=0;for(let i=0;i<Math.min(matrix.length,30);i++){const score=scorer(matrix[i]);if(score>bestScore){bestScore=score;bestIndex=i;}}return bestScore>=minimum?bestIndex:-1;}
+function scoreYardHeader(row=[]){const h=row.map(normalizeHeader),groups=[["unit nbr","unit no","container no"],["o b actual visit","ob actual visit","outbound visit","nvv"],["position","yard position","current position"],["frght kind","freight kind","sts"],["category","cat"]];return groups.reduce((s,a)=>s+Number(a.some(x=>h.includes(normalizeHeader(x)))),0);}
+function scoreWiHeader(row=[]){const h=row.map(normalizeHeader),groups=[["kind","move kind"],["container no","container number","unit nbr"],["planner"],["outbound carrier","outbound visit"]];return groups.reduce((s,a)=>s+Number(a.some(x=>h.includes(normalizeHeader(x)))),0);}
+function detectDelimiter(text){const line=String(text||"").replace(/^\uFEFF/,"").split(/\r?\n/,1)[0]||"";const c=["\t",",",";"].map(d=>({d,n:line.split(d).length-1})).sort((a,b)=>b.n-a.n);return c[0].n?c[0].d:"\t";}
+
+function renderAll() {
+  renderGlobalFilters(); renderOverview(); renderPlanner(); renderNvv(); renderRehandles(); renderYard(); renderHistoryTable(); renderPlannerAnalytics();
 }
 
-function buildPlannerCycles(records) {
-  return (records || []).flatMap(record => (record.vessels || []).flatMap(vessel => {
-    const breakdown = Array.isArray(vessel.plannerBreakdown) ? vessel.plannerBreakdown : [];
-    return breakdown.map(row => ({
-      id: `${record.id}:${vessel.id}:${row.planner}`,
-      planningDate: record.planningDate || "",
-      createdAt: record.createdAt || "",
-      terminal: record.terminal || "Unspecified",
-      vesselName: vessel.name || "Unknown vessel",
-      vesselVisit: vessel.visit || "Unknown visit",
-      shortSteaming: Boolean(vessel.shortSteaming),
-      planner: row.planner || "Unassigned",
-      totalMoves: row.totalMoves || 0,
-      loads: row.loads || 0,
-      discharges: row.discharges || 0,
-      full: row.full || 0,
-      empty: row.empty || 0,
-      size20: row.size20 || 0,
-      size40: row.size40 || 0,
-      size45: row.size45 || 0,
-      otherSize: row.otherSize || 0,
-      share: Number.isFinite(row.share) ? row.share : (vessel.totalMoves ? (row.totalMoves || 0) / vessel.totalMoves : 0),
-    }));
-  })).sort((a, b) => a.planningDate.localeCompare(b.planningDate) || a.createdAt.localeCompare(b.createdAt) || a.vesselName.localeCompare(b.vesselName));
+function syncGlobalFilterDefaults(terminal) { if (state.globalFilters.terminal === "all" && terminal) state.globalFilters.terminal = terminal; }
+function handleGlobalFilterChange() { state.globalFilters = { terminal:el.globalTerminal.value, planner:el.globalPlanner.value, vessel:el.globalVessel.value }; state.nvvPage=1; state.rehandlePage=1; state.yardPage=1; renderAll(); }
+function renderGlobalFilters() {
+  const planningRecords = [state.currentPlanning,...state.historyRecords.filter(r=>r.kind==="planning"||r.kind==="batch")].filter(Boolean);
+  const terminals=[...new Set([...TERMINALS,...state.historyRecords.map(r=>r.terminal).filter(Boolean)])].sort();
+  const planners=[...new Set(planningRecords.flatMap(r=>(r.planner?.planners||[]).map(p=>p.planner)))].sort();
+  const vessels=[...new Set(planningRecords.flatMap(r=>(r.vessels||[]).map(v=>v.name)))].sort();
+  setSelectOptions(el.globalTerminal,[['all','All terminals'],...terminals.map(v=>[v,v])],state.globalFilters.terminal);
+  setSelectOptions(el.globalPlanner,[['all','All planners'],...planners.map(v=>[v,v])],state.globalFilters.planner);
+  setSelectOptions(el.globalVessel,[['all','All vessels'],...vessels.map(v=>[v,v])],state.globalFilters.vessel);
+  state.globalFilters = { terminal:el.globalTerminal.value, planner:el.globalPlanner.value, vessel:el.globalVessel.value };
 }
+function setSelectOptions(select,options,value){select.innerHTML=options.map(([v,l])=>`<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`).join("");select.value=[...select.options].some(o=>o.value===value)?value:"all";}
+function currentPlanningMatchesTerminal(){return state.currentPlanning && (state.globalFilters.terminal==="all"||state.currentPlanning.terminal===state.globalFilters.terminal);}
+function currentYardMatchesTerminal(){return state.currentYard && (state.globalFilters.terminal==="all"||state.currentYard.terminal===state.globalFilters.terminal);}
+function scopedVessels() { if(!currentPlanningMatchesTerminal()) return []; return (state.currentPlanning.vessels||[]).filter(v=>(state.globalFilters.vessel==="all"||v.name===state.globalFilters.vessel)); }
+function scopedMoves(){const vesselIds=new Set(scopedVessels().map(v=>v.id));return (state.currentPlanning?.planner?.moves||[]).filter(m=>vesselIds.has(m.vesselId)&&(state.globalFilters.planner==="all"||(m.planner||"Unassigned")===state.globalFilters.planner));}
 
-function renderPlannerAnalytics() {
-  const allCycles = buildPlannerCycles(state.historyRecords);
-  const planner = elements.analyticsPlanner.value || "all";
-  const terminal = elements.analyticsTerminal.value || "all";
-  const from = elements.analyticsFrom.value;
-  const to = elements.analyticsTo.value;
-  const cycles = allCycles.filter(cycle =>
-    (planner === "all" || cycle.planner === planner)
-    && (terminal === "all" || cycle.terminal === terminal)
-    && (!from || cycle.planningDate >= from)
-    && (!to || cycle.planningDate <= to)
-  );
-
-  elements.analyticsEmpty.hidden = cycles.length > 0;
-  elements.analyticsContent.hidden = cycles.length === 0;
-  if (!cycles.length) return;
-
-  const totalMoves = cycles.reduce((sum, cycle) => sum + cycle.totalMoves, 0);
-  const averageMoves = totalMoves / cycles.length;
-  const averageShare = cycles.reduce((sum, cycle) => sum + cycle.share, 0) / cycles.length;
-  const networkCycles = cycles.filter(cycle => !cycle.shortSteaming).length;
-  const shortSteamingCycles = cycles.length - networkCycles;
-  const dateCount = new Set(cycles.map(cycle => cycle.planningDate)).size;
-  elements.analyticsMeta.textContent = `${planner === "all" ? "All planners" : planner} · ${terminal === "all" ? "All terminals" : terminal} · ${formatNumber(cycles.length)} planner-vessel cycles across ${formatNumber(dateCount)} planning dates`;
-  elements.analyticsKpis.innerHTML = renderKpiCards([
-    { label: "Planning cycles", value: cycles.length, note: "One planner + one vessel", tone: "neutral" },
-    { label: "Moves", value: totalMoves, note: "Across filtered cycles", tone: "teal" },
-    { label: "Average moves / cycle", value: averageMoves.toFixed(1), note: "Workload trend", tone: "blue" },
-    { label: "Average planner share", value: formatPercent(averageShare), note: "Share of vessel moves", tone: "success" },
-    { label: "Network / SS cycles", value: `${networkCycles} / ${shortSteamingCycles}`, note: "Vessel classification", tone: shortSteamingCycles ? "warning" : "neutral" },
+function renderOverview() {
+  const hasPlanning=currentPlanningMatchesTerminal(), hasYard=currentYardMatchesTerminal(); el.overviewEmpty.hidden=hasPlanning||hasYard; el.overviewContent.hidden=!(hasPlanning||hasYard); if(!(hasPlanning||hasYard)) return;
+  const vessels=scopedVessels(), moves=scopedMoves(), planners=new Set(moves.map(m=>m.planner||"Unassigned")); const ss=vessels.filter(v=>v.shortSteaming).length, eligible=vessels.length-ss;
+  el.overviewTitle.textContent = state.globalFilters.terminal==="all" ? "Current control tower" : `${state.globalFilters.terminal} control tower`;
+  el.overviewMeta.textContent = `Filters: ${filterSummary()} · Planning and Yard remain independent data sources.`;
+  el.overviewScope.innerHTML = renderKpis([
+    {label:"Vessels",value:vessels.length,note:`${eligible} NVV eligible`,tone:"neutral"},{label:"Short Steaming",value:ss,note:"Excluded from combined NVV",tone:ss?"warning":"neutral"},{label:"Planners",value:planners.size,note:"Filtered WI scope",tone:"teal"},{label:"Moves",value:moves.length,note:"Filtered WI scope",tone:"blue"},{label:"Planning date",value:hasPlanning?shortDate(state.currentPlanning.planningDate):"—",note:hasPlanning?state.currentPlanning.terminal:"No planning batch",tone:"neutral"},{label:"Yard units",value:hasYard?state.currentYard.yard.total:"—",note:hasYard?`${state.currentYard.terminal} snapshot`:"No matching yard",tone:"neutral"}
   ]);
-
-  renderTrendChart(elements.analyticsMovesTrend, cycles, cycle => cycle.totalMoves, value => formatNumber(value));
-  renderTrendChart(elements.analyticsShareTrend, cycles, cycle => cycle.share * 100, value => `${formatNumber(value)}%`, true);
-  renderBarList(elements.analyticsMoveMix, [
-    { label: "Load", value: cycles.reduce((sum, cycle) => sum + cycle.loads, 0) },
-    { label: "Discharge", value: cycles.reduce((sum, cycle) => sum + cycle.discharges, 0) },
-  ]);
-  renderBarList(elements.analyticsSizeMix, [
-    { label: "20 ft", value: cycles.reduce((sum, cycle) => sum + cycle.size20, 0) },
-    { label: "40 ft", value: cycles.reduce((sum, cycle) => sum + cycle.size40, 0) },
-    { label: "45 ft", value: cycles.reduce((sum, cycle) => sum + cycle.size45, 0) },
-    { label: "Other", value: cycles.reduce((sum, cycle) => sum + cycle.otherSize, 0) },
-  ]);
-  elements.analyticsTableBody.innerHTML = [...cycles].reverse().map(cycle => `
-    <tr>
-      <td>${escapeHtml(formatDate(cycle.planningDate))}</td>
-      <td><strong>${escapeHtml(cycle.planner)}</strong></td>
-      <td>${escapeHtml(cycle.terminal)}</td>
-      <td>${escapeHtml(cycle.vesselName)}<small class="table-subline">${escapeHtml(cycle.vesselVisit)}</small></td>
-      <td><span class="status-badge ${cycle.shortSteaming ? "warning" : "neutral"}">${cycle.shortSteaming ? "SS" : "Network"}</span></td>
-      <td>${formatNumber(cycle.totalMoves)}</td>
-      <td>${formatPercent(cycle.share)}</td>
-      <td>${formatNumber(cycle.loads)}</td>
-      <td>${formatNumber(cycle.discharges)}</td>
-      <td>${formatNumber(cycle.full)}</td>
-      <td>${formatNumber(cycle.empty)}</td>
-    </tr>
-  `).join("");
+  if(hasPlanning){const nvv=scopedNvvSummary();el.overviewNvv.innerHTML=metricStack([{label:"NVV accuracy",value:formatPercent(nvv.accuracyRate)},{label:"Eligible FCL",value:formatNumber(nvv.eligibleFcl)},{label:"Exceptions",value:formatNumber(nvv.exceptionCount)},{label:"SS FCL excluded",value:formatNumber(scopedSsExcludedFcl())}]);const rh=scopedRehandleRows();el.overviewRehandles.innerHTML=metricStack([{label:"Potential rehandles",value:formatNumber(rh.length)},{label:"Probable",value:formatNumber(rh.filter(r=>r.confidence==="probable").length)},{label:"Possible",value:formatNumber(rh.filter(r=>r.confidence==="possible").length)},{label:"Cross-POW demand",value:formatNumber(scopedCrossPowRows().length)}]);}
+  else { el.overviewNvv.innerHTML=emptyMini("No matching planning batch"); el.overviewRehandles.innerHTML=emptyMini("No matching planning batch"); }
+  if(hasYard){const y=state.currentYard.yard;el.overviewYard.innerHTML=metricStack([{label:"Population",value:formatNumber(y.total)},{label:"Average dwell",value:`${formatNumber(y.averageDwell)} d`},{label:"15+ days",value:formatNumber(y.aged15)},{label:"31+ days",value:formatNumber(y.aged31)}]);} else el.overviewYard.innerHTML=emptyMini("No matching yard snapshot");
+  renderAttention();
 }
+function renderAttention(){const items=[];if(currentPlanningMatchesTerminal()){const perVessel=scopedVessels().filter(v=>!v.shortSteaming).map(v=>({v,count:v.nvv?.exceptionCount||0})).sort((a,b)=>b.count-a.count);if(perVessel[0]?.count)items.push({tone:"danger",title:`${perVessel[0].v.name}: ${perVessel[0].count} NVV exceptions`,note:`${perVessel[0].v.visit} · highest current eligible vessel`});const prob=scopedRehandleRows().filter(r=>r.confidence==="probable").length;if(prob)items.push({tone:"warning",title:`${prob} probable retrieval rehandles`,note:"Same-POW stack sequence conflicts"});const cross=scopedCrossPowRows().length;if(cross)items.push({tone:"warning",title:`${cross} cross-POW stack interactions`,note:"Separate secondary control; not counted as rehandles"});}
+  if(currentYardMatchesTerminal()){const y=state.currentYard.yard;if(y.aged31)items.push({tone:"warning",title:`${formatNumber(y.aged31)} units aged 31+ days`,note:`${formatNumber(y.aged91)} at 91+ days`});const hot=(y.outboundStats||[]).filter(x=>x.label!=="Unspecified").sort((a,b)=>b.aged15-a.aged15)[0];if(hot?.aged15)items.push({tone:"warning",title:`${hot.label}: ${hot.aged15} units aged 15+`,note:`${formatNumber(hot.total)} units · avg dwell ${formatNumber(hot.averageDwell)} d`});}
+  if(!items.length)items.push({tone:"success",title:"No priority exception surfaced",note:"Review detailed workspaces for full diagnostics."});el.attentionList.innerHTML=items.map(attentionItem).join("");}
 
-function renderTrendChart(container, sourcePoints, valueAccessor, formatter, percentScale = false) {
-  const points = sourcePoints.slice(-30);
-  const width = 760;
-  const height = 250;
-  const left = 48;
-  const right = 18;
-  const top = 18;
-  const bottom = 42;
-  const plotWidth = width - left - right;
-  const plotHeight = height - top - bottom;
-  const values = points.map(valueAccessor);
-  const observedMax = Math.max(1, ...values);
-  const maximum = percentScale ? 100 : Math.ceil(observedMax / 10) * 10;
-  const xAt = index => points.length === 1 ? left + plotWidth / 2 : left + (index / (points.length - 1)) * plotWidth;
-  const yAt = value => top + plotHeight - (Math.max(0, value) / maximum) * plotHeight;
-  const grid = [0, 0.25, 0.5, 0.75, 1].map(ratio => {
-    const y = top + plotHeight - ratio * plotHeight;
-    return `<line class="trend-grid-line" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"></line><text class="trend-axis-label" x="${left - 8}" y="${y + 4}" text-anchor="end">${escapeHtml(formatter(maximum * ratio))}</text>`;
-  }).join("");
-  const polyline = points.map((point, index) => `${xAt(index)},${yAt(valueAccessor(point))}`).join(" ");
-  const labelIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
-  const xLabels = labelIndexes.map(index => `<text class="trend-axis-label" x="${xAt(index)}" y="${height - 13}" text-anchor="middle">${escapeHtml(shortDate(points[index].planningDate))}</text>`).join("");
-  const dots = points.map((point, index) => `
-    <circle class="trend-dot" cx="${xAt(index)}" cy="${yAt(valueAccessor(point))}" r="4">
-      <title>${escapeHtml(`${formatDate(point.planningDate)} · ${point.planner} · ${point.vesselName}: ${formatter(valueAccessor(point))}`)}</title>
-    </circle>
-  `).join("");
-  container.innerHTML = `
-    <svg class="trend-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Planning-cycle trend; exact values are listed in the table below">
-      ${grid}
-      <polyline class="trend-line" points="${polyline}"></polyline>
-      ${dots}
-      ${xLabels}
-    </svg>
-    <p class="trend-note">Showing the latest ${formatNumber(points.length)} filtered cycles. Hover a point for planner, vessel and exact value.</p>
-  `;
-}
+function renderPlanner(){const ready=currentPlanningMatchesTerminal();el.plannerEmpty.hidden=ready;el.plannerContent.hidden=!ready;if(!ready)return;const moves=scopedMoves();const rows=summarizeMovesByPlanner(moves);const vessels=scopedVessels();el.plannerMeta.textContent=`${filterSummary()} · ${vessels.length} vessel${vessels.length===1?"":"s"}`;el.plannerKpis.innerHTML=renderKpis([{label:"Moves",value:moves.length,note:"Filtered scope",tone:"neutral"},{label:"Load",value:moves.filter(m=>m.kind==="LOAD").length,note:"Moves",tone:"teal"},{label:"Discharge",value:moves.filter(m=>m.kind==="DSCH").length,note:"Moves",tone:"blue"},{label:"Planners",value:rows.length,note:"Filtered scope",tone:"neutral"},{label:"Network vessels",value:vessels.filter(v=>!v.shortSteaming).length,note:"NVV eligible",tone:"success"},{label:"SS vessels",value:vessels.filter(v=>v.shortSteaming).length,note:"Manual selection",tone:vessels.some(v=>v.shortSteaming)?"warning":"neutral"}]);renderBarList(el.plannerMovesChart,rows.map(r=>({label:r.planner,value:r.totalMoves})),14);renderBarList(el.plannerMoveMix,[{label:"Load",value:moves.filter(m=>m.kind==="LOAD").length},{label:"Discharge",value:moves.filter(m=>m.kind==="DSCH").length}]);renderBarList(el.plannerSizeMix,sizeMix(moves));el.plannerTableBody.innerHTML=rows.map(r=>`<tr><td><strong>${escapeHtml(r.planner)}</strong></td><td>${r.totalMoves}</td><td>${formatPercent(moves.length?r.totalMoves/moves.length:0)}</td><td>${r.loads}</td><td>${r.discharges}</td><td>${r.full}</td><td>${r.empty}</td><td>${r.size20}</td><td>${r.size40}</td><td>${r.size45}</td><td>${r.vesselCount}</td></tr>`).join("")||emptyRow(11,"No planner rows in this filter.");}
+function summarizeMovesByPlanner(moves){const map=new Map();moves.forEach(m=>{const p=m.planner||"Unassigned";if(!map.has(p))map.set(p,{planner:p,totalMoves:0,loads:0,discharges:0,full:0,empty:0,size20:0,size40:0,size45:0,v:new Set()});const r=map.get(p);r.totalMoves++;r.loads+=m.kind==="LOAD";r.discharges+=m.kind==="DSCH";const empty=["EMPTY","MTY","M/T","EMPTIES"].includes((m.freightKind||"").toUpperCase());r.empty+=empty;r.full+=!empty;const s=String(m.length||"").replace(/\D/g,"");if(s==="20")r.size20++;else if(s==="40")r.size40++;else if(s==="45")r.size45++;r.v.add(m.vesselId);});return [...map.values()].map(r=>({...r,vesselCount:r.v.size})).sort((a,b)=>b.totalMoves-a.totalMoves);}
+function sizeMix(moves){const c={"20 ft":0,"40 ft":0,"45 ft":0,"Other":0};moves.forEach(m=>{const s=String(m.length||"").replace(/\D/g,"");if(s==="20")c["20 ft"]++;else if(s==="40")c["40 ft"]++;else if(s==="45")c["45 ft"]++;else c.Other++;});return Object.entries(c).map(([label,value])=>({label,value}));}
 
-function shortDate(value) {
-  if (!value) return "n.a.";
-  const date = new Date(`${value}T00:00:00`);
-  return Number.isNaN(date.getTime()) ? cleanText(value) : new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short" }).format(date);
-}
+function scopedNvvRows(includeSsDiagnostic=false){if(!currentPlanningMatchesTerminal())return[];const vesselIds=new Set(scopedVessels().filter(v=>includeSsDiagnostic||!v.shortSteaming).map(v=>v.id));return (state.currentPlanning.nvv?.rows||[]).filter(r=>vesselIds.has(r.vesselId)&&(state.globalFilters.planner==="all"||(r.planner||"Unassigned")===state.globalFilters.planner));}
+function scopedNvvSummary(){const rows=scopedNvvRows(false);return summarizeNvvRows(rows,rows.length);}
+function scopedSsExcludedFcl(){if(!currentPlanningMatchesTerminal())return 0;const ssIds=new Set(scopedVessels().filter(v=>v.shortSteaming).map(v=>v.id));return (state.currentPlanning.nvv?.rows||[]).filter(r=>ssIds.has(r.vesselId)&&!["excluded-empty","excluded-restow"].includes(r.status)&&(state.globalFilters.planner==="all"||(r.planner||"Unassigned")===state.globalFilters.planner)).length;}
+function renderNvv(){const ready=currentPlanningMatchesTerminal();el.nvvEmpty.hidden=ready;el.nvvContent.hidden=!ready;if(!ready){el.nvvTabCount.textContent="—";return;}const selectedName=state.globalFilters.vessel;const selectedVessel=selectedName==="all"?null:state.currentPlanning.vessels.find(v=>v.name===selectedName);const diagnostic=Boolean(selectedVessel?.shortSteaming);const rows=diagnostic?scopedNvvRows(true).filter(r=>r.vesselName===selectedName):scopedNvvRows(false);const summary=summarizeNvvRows(rows,rows.length);el.nvvMeta.textContent=diagnostic?`${selectedVessel.name} · ${selectedVessel.visit} · diagnostic only`:`${filterSummary()} · Short Steaming excluded from combined KPI`;el.nvvSsBanner.hidden=!diagnostic;if(diagnostic)el.nvvSsBanner.textContent="SHORT STEAMING — diagnostic only. This vessel is excluded from the combined NVV KPI numerator and denominator.";el.nvvKpis.innerHTML=renderKpis([{label:"Eligible FCL",value:summary.eligibleFcl,note:diagnostic?"Diagnostic":"Network scope",tone:"neutral"},{label:"Valid NVV",value:summary.valid,note:formatPercent(summary.accuracyRate),tone:"success"},{label:"Missing NVV",value:summary.missingNvv,note:"Specific next vessel",tone:summary.missingNvv?"danger":"success"},{label:"Classification",value:summary.classificationIssues,note:"POD / category / outbound",tone:summary.classificationIssues?"warning":"success"},{label:"SS FCL excluded",value:diagnostic?0:scopedSsExcludedFcl(),note:"Manual SS",tone:"warning"},{label:"Accuracy",value:formatPercent(summary.accuracyRate),note:diagnostic?"Not in network KPI":"Eligible FCL",tone:"blue"}]);el.nvvScore.textContent=formatPercent(summary.accuracyRate);el.nvvDistribution.innerHTML=[['Valid import',summary.validImport,'success'],['Valid transhipment',summary.validTransship,'success'],['Valid HLC ITT',summary.validItt,'neutral'],['Exceptions',summary.exceptionCount,summary.exceptionCount?'danger':'success']].map(([l,v,t])=>`<div class="status-segment ${t}"><strong>${formatNumber(v)}</strong><span>${l}</span></div>`).join("");renderBarList(el.nvvLineChart,summary.byLine||[]);renderNvvRanking();renderNvvTable();el.nvvTabCount.textContent=formatNumber(scopedNvvSummary().exceptionCount);}
+function renderNvvRanking(){const vessels=scopedVessels();const max=Math.max(1,...vessels.filter(v=>!v.shortSteaming).map(v=>v.nvv?.exceptionCount||0));el.nvvVesselRanking.innerHTML=vessels.sort((a,b)=>(b.nvv?.exceptionCount||0)-(a.nvv?.exceptionCount||0)).map(v=>{const count=v.nvv?.exceptionCount||0;return `<div class="ranking-row"><button type="button" data-vessel-rank="${escapeHtml(v.name)}">${escapeHtml(v.name)}<small class="table-subline">${escapeHtml(v.visit)}</small></button><span class="rank-track"><span class="rank-fill" style="width:${v.shortSteaming?0:Math.max(1,count/max*100)}%"></span></span><span>${v.shortSteaming?'<span class="status-badge warning">SS excluded</span>':`${formatNumber(count)} exceptions`}</span><span>${v.shortSteaming?"—":formatPercent(v.nvv?.accuracyRate||0)}</span></div>`;}).join("");el.nvvVesselRanking.querySelectorAll("[data-vessel-rank]").forEach(button=>button.addEventListener("click",()=>{state.globalFilters.vessel=button.dataset.vesselRank;renderGlobalFilters();renderAll();}));}
+function renderNvvTable(){if(!currentPlanningMatchesTerminal())return;const selected=state.globalFilters.vessel;const selectedVessel=selected==="all"?null:state.currentPlanning.vessels.find(v=>v.name===selected);const diagnostic=Boolean(selectedVessel?.shortSteaming);let rows=(diagnostic?scopedNvvRows(true):scopedNvvRows(false));const q=el.nvvSearch.value.trim().toUpperCase(),filter=el.nvvStatusFilter.value,valid=new Set(["valid-import","valid-transship","valid-itt"]),excluded=new Set(["excluded-empty","excluded-restow"]);rows=rows.filter(r=>{const mq=!q||[r.unit,r.pod,r.outboundCarrier,r.lineOp,r.category,r.planner,r.vesselName,r.vesselVisit].some(v=>cleanText(v).toUpperCase().includes(q));const mf=filter==="all"||(filter==="exceptions"&&!valid.has(r.status)&&!excluded.has(r.status))||(filter==="valid"&&valid.has(r.status))||(filter==="excluded"&&excluded.has(r.status))||r.status===filter;return mq&&mf;});const page=paginate(rows,state.nvvPage);state.nvvPage=page.current;el.nvvTableBody.innerHTML=page.rows.map(r=>`<tr><td><strong>${escapeHtml(r.vesselName)}</strong><small class="table-subline">${escapeHtml(r.vesselVisit)}</small></td><td><span class="status-badge ${r.shortSteaming?'warning':''}">${r.shortSteaming?'SS':'Network'}</span></td><td><strong>${escapeHtml(r.unit)}</strong></td><td>${statusBadge(r.status)}</td><td>${valueOrDash(r.lineOp)}</td><td>${valueOrDash(r.pod)}</td><td>${valueOrDash(r.category)}</td><td>${valueOrDash(r.outboundCarrier)}</td><td>${valueOrDash(r.planner)}</td><td>${valueOrDash(r.pow)}</td><td class="explanation-cell">${escapeHtml(r.explanation)}</td></tr>`).join("")||emptyRow(11,"No NVV rows match the filters.");renderPagination(el.nvvPagination,page,n=>{state.nvvPage=n;renderNvvTable();});}
 
-function upgradeLegacyRecord(record) {
-  if (record?.version >= 2 && Array.isArray(record.vessels) && record.planner) {
-    return {
-      ...record,
-      vessels: record.vessels.map(vessel => ({
-        ...vessel,
-        plannerBreakdown: Array.isArray(vessel.plannerBreakdown)
-          ? vessel.plannerBreakdown
-          : (vessel.planners || []).map(row => ({
-            planner: row.label || "Unassigned",
-            totalMoves: row.value || 0,
-            loads: 0,
-            discharges: 0,
-            full: 0,
-            empty: 0,
-            size20: 0,
-            size40: 0,
-            size45: 0,
-            otherSize: 0,
-            share: vessel.totalMoves ? (row.value || 0) / vessel.totalMoves : 0,
-          })),
-      })),
-    };
-  }
-  const identity = record?.nvv?.vessel || { name: "Legacy vessel", visit: "Unknown visit" };
-  const totalMoves = record?.nvv?.totalMoves || 0;
-  const legacyId = "legacy-vessel";
-  const shortSteaming = Boolean(record?.shortSteaming);
-  const decorateRows = rows => (rows || []).map(row => ({
-    ...row,
-    vesselId: legacyId,
-    vesselName: identity.name || "Legacy vessel",
-    vesselVisit: identity.visit || "Unknown visit",
-    shortSteaming,
-  }));
-  const legacyNvv = record?.nvv ? { ...record.nvv, rows: decorateRows(record.nvv.rows) } : null;
-  const legacyRehandles = record?.rehandles ? { ...record.rehandles, rows: decorateRows(record.rehandles.rows) } : null;
-  const vessel = {
-    id: legacyId,
-    fileName: record?.sourceFiles?.wi || "Earlier Work List",
-    name: identity.name || "Legacy vessel",
-    visit: identity.visit || "Unknown visit",
-    shortSteaming,
-    totalMoves,
-    loads: record?.nvv?.totalLoads || 0,
-    discharges: record?.nvv?.totalDischarges || 0,
-    planners: [],
-    nvv: legacyNvv,
-    rehandles: legacyRehandles,
-  };
-  return {
-    ...record,
-    version: 2,
-    yardAvailable: Boolean(record?.yard),
-    vessels: [vessel],
-    nvv: legacyNvv,
-    rehandles: legacyRehandles,
-    planner: {
-      totalMoves,
-      totalLoads: vessel.loads,
-      totalDischarges: vessel.discharges,
-      plannerCount: 0,
-      networkMoves: vessel.shortSteaming ? 0 : totalMoves,
-      shortSteamingMoves: vessel.shortSteaming ? totalMoves : 0,
-      planners: [],
-      vesselRows: [vessel],
-      byMoveKind: [],
-      byFreightKind: record?.nvv?.loadByFreightKind || [],
-      byLength: record?.nvv?.loadByLength || [],
-    },
-  };
-}
+function scopedRehandleRows(){if(!currentPlanningMatchesTerminal())return[];const ids=new Set(scopedVessels().map(v=>v.id));return (state.currentPlanning.rehandles?.rows||[]).filter(r=>ids.has(r.vesselId)&&(state.globalFilters.planner==="all"||(r.targetPlanner||"Unassigned")===state.globalFilters.planner));}
+function scopedCrossPowRows(){if(!currentPlanningMatchesTerminal())return[];const ids=new Set(scopedVessels().map(v=>v.id));return (state.currentPlanning.rehandles?.crossPowRows||[]).filter(r=>ids.has(r.vesselId)&&(state.globalFilters.planner==="all"||(r.targetPlanner||"Unassigned")===state.globalFilters.planner));}
+function renderRehandles(){const ready=currentPlanningMatchesTerminal();el.rehandleEmpty.hidden=ready;el.rehandleContent.hidden=!ready;if(!ready){el.rehandleTabCount.textContent="—";return;}const rows=scopedRehandleRows(),cross=scopedCrossPowRows();const probable=rows.filter(r=>r.confidence==="probable").length,possible=rows.length-probable;el.rehandleMeta.textContent=`${filterSummary()} · same-POW retrieval sequence only`;el.rehandleKpis.innerHTML=renderKpis([{label:"Potential",value:rows.length,note:"Same POW",tone:rows.length?"warning":"success"},{label:"Affected targets",value:new Set(rows.map(r=>r.targetUnit)).size,note:"Unique loads",tone:"neutral"},{label:"Probable",value:probable,note:"Stronger evidence",tone:probable?"danger":"success"},{label:"Possible",value:possible,note:"Review constraints",tone:possible?"warning":"success"},{label:"Cross-POW demand",value:cross.length,note:"Not counted as rehandle",tone:cross.length?"blue":"neutral"}]);renderBarList(el.rehandleConfidenceChart,[{label:"Probable",value:probable},{label:"Possible",value:possible}]);el.crossPowSummary.innerHTML=metricStack([{label:"Interactions",value:formatNumber(cross.length)},{label:"Stacks",value:formatNumber(new Set(cross.map(r=>r.stack)).size)},{label:"Targets",value:formatNumber(new Set(cross.map(r=>r.targetUnit)).size)}]);renderRehandleTable();el.rehandleTabCount.textContent=formatNumber(rows.length);}
+function renderRehandleTable(){let rows=scopedRehandleRows();const q=el.rehandleSearch.value.trim().toUpperCase(),f=el.rehandleStatusFilter.value;rows=rows.filter(r=>(!q||[r.targetUnit,r.blockerUnit,r.stack,r.targetPlanner,r.targetPow,r.vesselName].some(v=>cleanText(v).toUpperCase().includes(q)))&&(f==="all"||r.confidence===f));const page=paginate(rows,state.rehandlePage);state.rehandlePage=page.current;el.rehandleTableBody.innerHTML=page.rows.map(r=>`<tr><td><strong>${escapeHtml(r.vesselName)}</strong><small class="table-subline">${escapeHtml(r.vesselVisit)}</small></td><td>${escapeHtml(r.targetUnit)}</td><td>${escapeHtml(r.blockerUnit)}</td><td>${escapeHtml(r.stack)}</td><td>${r.blockerTier} above ${r.targetTier}</td><td>${statusBadge(r.confidence)}</td><td>${valueOrDash(r.targetMoveTime)}</td><td>${valueOrDash(r.blockerMoveTime)}</td><td>${valueOrDash(r.targetPlanner)}</td><td>${valueOrDash(r.targetPow)}</td><td class="explanation-cell">${escapeHtml(r.explanation)}</td></tr>`).join("")||emptyRow(11,"No potential rehandles match the filters.");renderPagination(el.rehandlePagination,page,n=>{state.rehandlePage=n;renderRehandleTable();});}
 
-async function handleHistoryAction(event) {
-  const button = event.target.closest("button[data-history-action]");
-  if (!button) return;
-  const records = await getHistory();
-  const rawRecord = records.find(item => item.id === button.dataset.historyId);
-  if (!rawRecord) return;
-  if (button.dataset.historyAction === "view") {
-    const record = upgradeLegacyRecord(rawRecord);
-    state.analysis = record;
-    state.nvvPage = 1;
-    state.rehandlePage = 1;
-    renderAnalysis(record);
-    showToast("Saved analysis loaded.");
-  } else if (confirm("Delete this saved analysis?")) {
-    await withHistoryStore("readwrite", store => store.delete(rawRecord.id));
-    await renderHistory();
-    showToast("Saved analysis deleted.");
-  }
-}
+function renderYard(){const ready=currentYardMatchesTerminal();el.yardEmpty.hidden=ready;el.yardContent.hidden=!ready;if(!ready)return;const y=state.currentYard.yard;el.yardMeta.textContent=`${state.currentYard.terminal} · ${state.currentYard.sourceFiles?.yard||"Yard Inventory"} · latest move ${y.snapshotLatest?formatDateTime(y.snapshotLatest):"unavailable"}`;el.yardKpis.innerHTML=renderKpis([{label:"Total units",value:y.total,note:`${formatNumber(y.uniqueUnits)} unique`,tone:"neutral"},{label:"FCL",value:y.fcl,note:formatPercent(y.total?y.fcl/y.total:0),tone:"teal"},{label:"MTY",value:y.empty,note:formatPercent(y.total?y.empty/y.total:0),tone:"blue"},{label:"Avg dwell",value:`${formatNumber(y.averageDwell)} d`,note:`Median ${formatNumber(y.medianDwell)} d`,tone:"neutral"},{label:"15+ days",value:y.aged15,note:`${formatNumber(y.aged31)} at 31+`,tone:y.aged15?"warning":"success"},{label:"FCL no outbound",value:y.fclWithoutOutboundVisit,note:"Yard data completeness",tone:y.fclWithoutOutboundVisit?"danger":"success"}]);renderBarList(el.dwellChart,y.dwellBuckets.filter(x=>x.value));renderBarList(el.lineChart,y.lines);renderBarList(el.categoryChart,y.categories);renderBarList(el.agingChart,y.dwellBuckets.filter(x=>x.value));renderBarList(el.lineAgingChart,(y.lineStats||[]).map(x=>({label:x.label,value:x.aged15})));el.blockTableBody.innerHTML=(y.blockStats||[]).map(x=>`<tr><td><strong>${escapeHtml(x.label)}</strong></td><td>${x.total}</td><td>${x.fcl}</td><td>${x.empty}</td><td>${formatNumber(x.averageDwell)} d</td><td>${x.aged15}</td><td>${x.aged31}</td><td>${x.aged91}</td></tr>`).join("");el.outboundTableBody.innerHTML=(y.outboundStats||[]).filter(x=>x.label!=="Unspecified").map(x=>`<tr><td><strong>${escapeHtml(x.label)}</strong></td><td>${x.total}</td><td>${formatNumber(x.averageDwell)} d</td><td>${formatNumber(x.medianDwell)} d</td><td>${x.aged15}</td><td>${x.aged31}</td><td>${x.aged91}</td></tr>`).join("");renderYardAttention();renderYardSubview();renderYardContainerExplorer();}
+function renderYardAttention(){const y=state.currentYard.yard;const items=[];const agedVisits=(y.outboundStats||[]).filter(x=>x.label!=="Unspecified"&&x.aged15>0).sort((a,b)=>b.aged15-a.aged15).slice(0,5);agedVisits.forEach(x=>items.push({tone:x.aged31?"warning":"",title:`${x.label}: ${x.aged15} aged 15+`,note:`${x.total} units · avg dwell ${formatNumber(x.averageDwell)} d · ${x.aged31} aged 31+`}));const blocks=(y.blockStats||[]).filter(x=>x.aged31>0).sort((a,b)=>b.aged31-a.aged31).slice(0,3);blocks.forEach(x=>items.push({tone:"warning",title:`Block ${x.label}: ${x.aged31} aged 31+`,note:`${x.total} units · ${x.aged15} aged 15+`}));if(y.fclWithoutOutboundVisit)items.push({tone:"danger",title:`${y.fclWithoutOutboundVisit} FCL without Outbound Visit`,note:"Yard data-completeness check; not the WI NVV KPI."});el.yardAttentionList.innerHTML=(items.length?items:[{tone:"success",title:"No yard attention item surfaced",note:"Review raw inventory for full detail."}]).map(attentionItem).join("");}
+function renderYardSubview(){document.querySelectorAll(".subtab").forEach(b=>b.classList.toggle("active",b.dataset.yardView===state.yardView));document.querySelectorAll(".yard-subview").forEach(v=>v.classList.remove("active"));const target=document.getElementById(`yardView${state.yardView[0].toUpperCase()}${state.yardView.slice(1)}`);target?.classList.add("active");}
+function renderYardContainerExplorer(){if(!currentYardMatchesTerminal())return;let rows=state.currentYard.yard.rows||[];const q=el.yardSearch.value.trim().toUpperCase(),d=el.yardDwellFilter.value;rows=rows.filter(r=>(!q||[r.unit,r.lineOp,r.category,r.typeIso,r.pod,r.outboundVisit,r.block,r.position].some(v=>cleanText(v).toUpperCase().includes(q)))&&(d==="all"||(Number.isFinite(r.dwell)&&r.dwell>=Number(d))));const page=paginate(rows,state.yardPage);state.yardPage=page.current;el.yardTableBody.innerHTML=page.rows.map(r=>`<tr><td><strong>${escapeHtml(r.unit)}</strong></td><td>${valueOrDash(r.lineOp)}</td><td>${valueOrDash(r.freightKind)}</td><td>${valueOrDash(r.category)}</td><td>${valueOrDash(r.typeIso)}</td><td>${valueOrDash(r.pod)}</td><td>${valueOrDash(r.outboundVisit)}</td><td>${Number.isFinite(r.dwell)?`${formatNumber(r.dwell)} d`:"—"}</td><td>${valueOrDash(r.block)}</td><td>${valueOrDash(r.position)}</td></tr>`).join("")||emptyRow(10,"No yard rows match the filters.");renderPagination(el.yardPagination,page,n=>{state.yardPage=n;renderYardContainerExplorer();});}
 
-async function clearHistory() {
-  if (!confirm("Delete all locally saved analyses?")) return;
-  await withHistoryStore("readwrite", store => store.clear());
-  await renderHistory();
-  showToast("Local analysis history cleared.");
-}
+function renderPlannerAnalytics(){const cycles=buildPlannerCycles(state.historyRecords).filter(cycle=>matchesGlobalCycle(cycle)&&(!el.analyticsFrom.value||cycle.planningDate>=el.analyticsFrom.value)&&(!el.analyticsTo.value||cycle.planningDate<=el.analyticsTo.value));renderTrendChart(el.analyticsMovesTrend,cycles,c=>c.totalMoves,v=>formatNumber(v));renderTrendChart(el.analyticsShareTrend,cycles,c=>c.share*100,v=>`${formatNumber(v)}%`,true);el.analyticsTableBody.innerHTML=[...cycles].reverse().slice(0,200).map(c=>`<tr><td>${formatDate(c.planningDate)}</td><td><strong>${escapeHtml(c.planner)}</strong></td><td>${escapeHtml(c.terminal)}</td><td>${escapeHtml(c.vesselName)}<small class="table-subline">${escapeHtml(c.vesselVisit)}</small></td><td><span class="status-badge ${c.shortSteaming?'warning':''}">${c.shortSteaming?'SS':'Network'}</span></td><td>${c.totalMoves}</td><td>${formatPercent(c.share)}</td></tr>`).join("")||emptyRow(7,"No saved planning cycles match the filters.");}
+function buildPlannerCycles(records){return records.filter(r=>r.kind==="planning"||r.kind==="batch"||r.planner).flatMap(record=>(record.vessels||[]).flatMap(v=>(v.plannerBreakdown||[]).map(row=>({planningDate:record.planningDate||"",createdAt:record.createdAt||"",terminal:record.terminal||"",vesselName:v.name||"",vesselVisit:v.visit||"",shortSteaming:Boolean(v.shortSteaming),planner:row.planner||"Unassigned",totalMoves:row.totalMoves||0,share:Number.isFinite(row.share)?row.share:(v.totalMoves?(row.totalMoves||0)/v.totalMoves:0)})))).sort((a,b)=>a.planningDate.localeCompare(b.planningDate)||a.createdAt.localeCompare(b.createdAt));}
+function matchesGlobalCycle(c){return(state.globalFilters.terminal==="all"||c.terminal===state.globalFilters.terminal)&&(state.globalFilters.planner==="all"||c.planner===state.globalFilters.planner)&&(state.globalFilters.vessel==="all"||c.vesselName===state.globalFilters.vessel);}
 
-function nvvExceptions(nvv) {
-  if (Number.isFinite(nvv?.exceptionCount)) return nvv.exceptionCount;
-  return (nvv?.wrong || 0) + (nvv?.missing || 0) + (nvv?.notInYard || 0);
-}
+function openHistoryDb(){return new Promise((resolve,reject)=>{const request=indexedDB.open("yard-control-tower",2);request.onupgradeneeded=()=>{if(!request.result.objectStoreNames.contains("runs"))request.result.createObjectStore("runs",{keyPath:"id"});};request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});}
+async function withHistoryStore(mode,callback){const db=await openHistoryDb();return new Promise((resolve,reject)=>{const tx=db.transaction("runs",mode),store=tx.objectStore("runs");let result;try{result=callback(store);}catch(e){reject(e);return;}tx.oncomplete=()=>{db.close();resolve(result?.result)};tx.onerror=()=>{db.close();reject(tx.error)};});}
+function saveHistory(record){return withHistoryStore("readwrite",store=>store.put(record));}
+async function getHistory(){const db=await openHistoryDb();return new Promise((resolve,reject)=>{const tx=db.transaction("runs","readonly"),req=tx.objectStore("runs").getAll();req.onsuccess=()=>resolve(req.result.sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||"")));req.onerror=()=>reject(req.error);tx.oncomplete=()=>db.close();});}
+async function renderHistory(){try{state.historyRecords=(await getHistory()).map(upgradeHistoryRecord);renderGlobalFilters();renderHistoryTable();renderPlannerAnalytics();}catch(e){console.warn(e);state.historyRecords=[];}}
+function upgradeHistoryRecord(record){if(record?.kind)return record;if(record?.version>=2&&record.planner)return{...record,kind:record.yard?"batch":"planning"};if(record?.yard&&!record.planner)return{...record,kind:"yard"};return{...record,kind:"planning"};}
+function recordMatchesFilters(record){if(state.globalFilters.terminal!=="all"&&record.terminal!==state.globalFilters.terminal)return false;if(record.kind==="yard")return true;const vessels=record.vessels||[];if(state.globalFilters.vessel!=="all"&&!vessels.some(v=>v.name===state.globalFilters.vessel))return false;if(state.globalFilters.planner!=="all"&&!vessels.some(v=>(v.plannerBreakdown||[]).some(p=>p.planner===state.globalFilters.planner)))return false;return true;}
+function renderHistoryTable(){const records=state.historyRecords.filter(recordMatchesFilters);const planning=records.filter(r=>r.kind==="planning"||r.kind==="batch"),yards=records.filter(r=>r.kind==="yard"||r.kind==="batch"&&r.yard);el.historySummary.innerHTML=renderKpis([{label:"Saved records",value:records.length,note:"This browser",tone:"neutral"},{label:"Planning",value:planning.length,note:"Batches",tone:"teal"},{label:"Yard",value:yards.length,note:"Snapshots",tone:"blue"},{label:"Vessels",value:planning.reduce((s,r)=>s+(r.vessels?.length||0),0),note:"Saved scope",tone:"neutral"},{label:"SS vessels",value:planning.reduce((s,r)=>s+(r.vessels||[]).filter(v=>v.shortSteaming).length,0),note:"Manual selections",tone:"warning"}]);el.historyEmpty.hidden=records.length>0;el.historyTableBody.innerHTML=records.map(r=>historyRow(r)).join("");const options=records.map(r=>[r.id,`${formatDate(r.planningDate)} · ${r.terminal} · ${r.kind}`]);setSelectOptions(el.compareA,[["","Select record A"],...options],el.compareA.value);setSelectOptions(el.compareB,[["","Select record B"],...options],el.compareB.value);}
+function historyRow(r){const planning=r.kind==="planning"||r.kind==="batch";const yard=r.kind==="yard"||(r.kind==="batch"&&r.yard);let scope,headline;if(planning){scope=`${r.vessels?.length||0} vessels`;headline=`${formatNumber(r.planner?.totalMoves||0)} moves · ${formatPercent(r.nvv?.accuracyRate||0)} NVV`;}else if(yard){scope=`${formatNumber(r.yard?.total||0)} units`;headline=`${formatNumber(r.yard?.aged15||0)} aged 15+ · avg ${formatNumber(r.yard?.averageDwell)} d`;}return`<tr><td>${formatDate(r.planningDate)}</td><td><span class="status-badge">${escapeHtml(r.kind||"analysis")}</span></td><td><strong>${escapeHtml(r.terminal||"")}</strong></td><td>${escapeHtml(scope||"")}</td><td>${escapeHtml(headline||"")}</td><td>${formatDateTime(r.createdAt)}</td><td><button class="text-button" data-history-action="view" data-history-id="${r.id}">View</button><button class="text-button danger-text" data-history-action="delete" data-history-id="${r.id}">Delete</button></td></tr>`;}
+async function handleHistoryAction(event){const b=event.target.closest("button[data-history-action]");if(!b)return;const record=state.historyRecords.find(r=>r.id===b.dataset.historyId);if(!record)return;if(b.dataset.historyAction==="view"){if(record.kind==="yard")state.currentYard=record;else{state.currentPlanning=record;if(record.kind==="batch"&&record.yard)state.currentYard={kind:"yard",terminal:record.terminal,planningDate:record.planningDate,createdAt:record.createdAt,sourceFiles:record.sourceFiles,yard:record.yard,quality:record.yardQuality||{}};}syncGlobalFilterDefaults(record.terminal);renderAll();activateTab(record.kind==="yard"?"yard":"overview");showToast("Saved analysis loaded.");}else if(confirm("Delete this saved analysis?")){await withHistoryStore("readwrite",store=>store.delete(record.id));await renderHistory();renderAll();}}
+async function clearHistory(){if(!confirm("Delete all locally saved analyses?"))return;await withHistoryStore("readwrite",store=>store.clear());await renderHistory();renderAll();showToast("History cleared.");}
+function exportHistory(){const blob=new Blob([JSON.stringify(state.historyRecords,null,2)],{type:"application/json"});downloadBlob(blob,`planning-excellence-history-${new Date().toISOString().slice(0,10)}.json`);}
+async function importHistory(file){if(!file)return;try{const data=JSON.parse(await file.text());if(!Array.isArray(data))throw new Error("History file must contain an array.");for(const record of data){if(record?.id)await saveHistory(record);}await renderHistory();renderAll();showToast(`${data.length} history records imported.`);}catch(e){showToast(e.message||"History import failed.");}finally{el.importHistoryFile.value="";}}
+function renderComparison(){const a=state.historyRecords.find(r=>r.id===el.compareA.value),b=state.historyRecords.find(r=>r.id===el.compareB.value);if(!a||!b){el.compareResult.innerHTML=emptyMini("Select two records.");return;}if((a.kind==="yard")!==(b.kind==="yard")){el.compareResult.innerHTML=emptyMini("Compare records of the same type: planning vs planning or yard vs yard.");return;}const metrics=a.kind==="yard"?[["Units",a.yard?.total,b.yard?.total],["Avg dwell",a.yard?.averageDwell,b.yard?.averageDwell],["15+",a.yard?.aged15,b.yard?.aged15],["31+",a.yard?.aged31,b.yard?.aged31],["91+",a.yard?.aged91,b.yard?.aged91]]:[["Vessels",a.vessels?.length,b.vessels?.length],["Moves",a.planner?.totalMoves,b.planner?.totalMoves],["NVV accuracy",(a.nvv?.accuracyRate||0)*100,(b.nvv?.accuracyRate||0)*100],["NVV exceptions",a.nvv?.exceptionCount,b.nvv?.exceptionCount],["Rehandles",a.rehandles?.count,b.rehandles?.count]];el.compareResult.innerHTML=`<div class="compare-result-grid">${metrics.map(([l,av,bv])=>{const delta=(Number(bv)||0)-(Number(av)||0);return`<div class="compare-metric"><span>${l}</span><strong>${formatNumber(bv)}</strong><small>A ${formatNumber(av)} · Δ ${delta>=0?"+":""}${formatNumber(delta)}</small></div>`;}).join("")}</div>`;}
 
-function vesselLabel(vessel) {
-  if (!vessel) return "Selected vessel";
-  return `${vessel.name} · ${vessel.visit} · ${vessel.shortSteaming ? "Short steaming" : "Network"}`;
-}
+function printReport(mode){const p=state.currentPlanning,y=state.currentYard;let html=`<div class="report-page"><p>Planning Excellence Center</p><h1>${mode==="yard"?"Yard Intelligence Report":mode==="nvv"?"NVV & Data Accuracy Report":"Executive Control Tower"}</h1><p>${escapeHtml(filterSummary())} · Generated ${formatDateTime(new Date().toISOString())}</p>`;if(p&&mode!=="yard"){const n=scopedNvvSummary();html+=`<div class="report-kpis">${reportKpi("Vessels",scopedVessels().length)}${reportKpi("Moves",scopedMoves().length)}${reportKpi("NVV accuracy",formatPercent(n.accuracyRate))}${reportKpi("NVV exceptions",n.exceptionCount)}${reportKpi("Potential rehandles",scopedRehandleRows().length)}${reportKpi("SS FCL excluded",scopedSsExcludedFcl())}</div>`;}if(y&&mode!=="nvv"){html+=`<h2>Yard snapshot</h2><div class="report-kpis">${reportKpi("Yard units",y.yard.total)}${reportKpi("Average dwell",`${formatNumber(y.yard.averageDwell)} d`)}${reportKpi("15+",y.yard.aged15)}${reportKpi("31+",y.yard.aged31)}</div>`;}html+=`</div>`;if((mode==="detailed"||mode==="nvv")&&p){const rows=scopedNvvRows(state.globalFilters.vessel!=="all"&&scopedVessels()[0]?.shortSteaming).filter(r=>!["valid-import","valid-transship","valid-itt","excluded-empty","excluded-restow"].includes(r.status));html+=`<div class="report-page"><h1>NVV Exceptions</h1><table><thead><tr><th>Vessel</th><th>Container</th><th>Status</th><th>Line</th><th>POD</th><th>Category</th><th>Outbound</th><th>Planner</th><th>Reason</th></tr></thead><tbody>${rows.slice(0,500).map(r=>`<tr><td>${escapeHtml(r.vesselName)}</td><td>${escapeHtml(r.unit)}</td><td>${escapeHtml(statusText(r.status))}</td><td>${escapeHtml(r.lineOp)}</td><td>${escapeHtml(r.pod)}</td><td>${escapeHtml(r.category)}</td><td>${escapeHtml(r.outboundCarrier)}</td><td>${escapeHtml(r.planner)}</td><td>${escapeHtml(r.explanation)}</td></tr>`).join("")}</tbody></table></div>`;}if((mode==="detailed"||mode==="yard")&&y){html+=`<div class="report-page"><h1>Yard Outbound Attention</h1><table><thead><tr><th>Visit</th><th>Units</th><th>Avg dwell</th><th>15+</th><th>31+</th><th>91+</th></tr></thead><tbody>${(y.yard.outboundStats||[]).filter(x=>x.label!=="Unspecified").slice(0,80).map(x=>`<tr><td>${escapeHtml(x.label)}</td><td>${x.total}</td><td>${formatNumber(x.averageDwell)}</td><td>${x.aged15}</td><td>${x.aged31}</td><td>${x.aged91}</td></tr>`).join("")}</tbody></table></div>`;}el.printReport.innerHTML=html;setTimeout(()=>window.print(),30);}
+function reportKpi(label,value){return`<div class="report-kpi"><span>${label}</span><strong>${value}</strong></div>`;}
 
-function fileStem(value) {
-  return cleanText(value).replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
-}
+function exportPlanner(){downloadCsv(summarizeMovesByPlanner(scopedMoves()).map(r=>({Planner:r.planner,Moves:r.totalMoves,Load:r.loads,Discharge:r.discharges,FCL:r.full,MTY:r.empty,Vessels:r.vesselCount})),`planner-${safeName(filterSummary())}.csv`);}
+function exportNvv(){downloadCsv(scopedNvvRows(true).map(r=>({Vessel:r.vesselName,Visit:r.vesselVisit,Type:r.shortSteaming?"Short Steaming":"Network",Container:r.unit,Status:statusText(r.status),Line:r.lineOp,POD:r.pod,Category:r.category,Outbound:r.outboundCarrier,Planner:r.planner,POW:r.pow,Reason:r.explanation})),`nvv-${safeName(filterSummary())}.csv`);}
+function exportRehandles(){downloadCsv(scopedRehandleRows().map(r=>({Vessel:r.vesselName,Target:r.targetUnit,Blocker:r.blockerUnit,Stack:r.stack,TargetTier:r.targetTier,BlockerTier:r.blockerTier,Confidence:r.confidence,TargetTime:r.targetMoveTime,BlockerTime:r.blockerMoveTime,Planner:r.targetPlanner,POW:r.targetPow,Evidence:r.explanation})),`rehandles-${safeName(filterSummary())}.csv`);}
+function downloadCsv(rows,filename){if(!rows.length)return showToast("No rows to export.");const headers=Object.keys(rows[0]),csv=[headers,...rows.map(r=>headers.map(h=>r[h]))].map(row=>row.map(csvCell).join(",")).join("\r\n");downloadBlob(new Blob(["\uFEFF",csv],{type:"text/csv;charset=utf-8"}),filename);}
+function csvCell(value){let text=cleanText(value);if(/^[=+\-@]/.test(text))text=`'${text}`;return`"${text.replace(/"/g,'""')}"`;}
+function downloadBlob(blob,filename){const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),500);}
 
-function safeName(value) {
-  return cleanText(value).replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-|-$/g, "") || "control-tower";
-}
-
-function formatNumber(value) {
-  return new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }).format(Number(value) || 0);
-}
-
-function formatPercent(value) {
-  return new Intl.NumberFormat("en-GB", { style: "percent", maximumFractionDigits: 1 }).format(Number(value) || 0);
-}
-
-function formatBytes(bytes) {
-  return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatDate(value) {
-  if (!value) return "Date unavailable";
-  const date = new Date(`${value}`.length === 10 ? `${value}T00:00:00` : value);
-  return Number.isNaN(date.getTime()) ? cleanText(value) : new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" }).format(date);
-}
-
-function formatDateTime(value) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(date);
-}
-
-function nextFrame() {
-  return new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-}
-
-function escapeHtml(value) {
-  return cleanText(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
-}
-
-let toastTimer;
-function showToast(message) {
-  clearTimeout(toastTimer);
-  elements.toast.textContent = message;
-  elements.toast.classList.add("show");
-  toastTimer = setTimeout(() => elements.toast.classList.remove("show"), 3600);
-}
+function activateTab(tab){document.querySelectorAll(".tab-button").forEach(b=>b.classList.toggle("active",b.dataset.tab===tab));document.querySelectorAll(".tab-panel").forEach(p=>p.classList.toggle("active",p.dataset.panel===tab));if(tab==="history")renderHistoryTable();}
+function renderKpis(cards){return cards.map(c=>`<article class="kpi-card ${c.tone||"neutral"}"><span class="kpi-label">${escapeHtml(c.label)}</span><strong class="kpi-value">${typeof c.value==="number"?formatNumber(c.value):escapeHtml(c.value)}</strong><span class="kpi-note">${escapeHtml(c.note||"")}</span></article>`).join("");}
+function renderBarList(container,items=[],limit=12){const visible=items.slice(0,limit),max=Math.max(1,...visible.map(i=>i.value||0));container.innerHTML=visible.map(i=>`<div class="bar-row"><span class="bar-label" title="${escapeHtml(i.label)}">${escapeHtml(i.label)}</span><span class="bar-track"><span class="bar-fill" style="width:${Math.max(1,(i.value/max)*100)}%"></span></span><span class="bar-value">${formatNumber(i.value)}</span></div>`).join("")||'<p class="muted-cell">No data available.</p>';}
+function metricStack(items){return`<div class="metric-stack">${items.map(i=>`<div class="metric-line"><span>${escapeHtml(i.label)}</span><strong>${escapeHtml(i.value)}</strong></div>`).join("")}</div>`;}
+function attentionItem(i){return`<div class="attention-item ${i.tone||""}"><span class="attention-marker"></span><div><strong>${escapeHtml(i.title)}</strong><p>${escapeHtml(i.note||"")}</p></div></div>`;}
+function emptyMini(text){return`<p class="muted-cell">${escapeHtml(text)}</p>`;}
+function statusBadge(status){const map={"valid-import":["Valid import","success"],"valid-transship":["Valid transhipment","success"],"valid-itt":["Valid HLC ITT","success"],"missing-nvv":["Missing NVV","danger"],"category-mismatch":["Category mismatch","warning"],"outbound-mismatch":["Outbound mismatch","warning"],"missing-pod":["Missing POD","danger"],"excluded-empty":["Excluded MTY",""],"excluded-restow":["Excluded restow",""],probable:["Probable","warning"],possible:["Possible",""]};const [l,t]=map[status]||[status,""];return`<span class="status-badge ${t}">${escapeHtml(l)}</span>`;}
+function statusText(status){return ({"valid-import":"Valid import","valid-transship":"Valid transhipment","valid-itt":"Valid HLC ITT","missing-nvv":"Missing NVV","category-mismatch":"Category mismatch","outbound-mismatch":"Outbound mismatch","missing-pod":"Missing POD","excluded-empty":"Excluded MTY","excluded-restow":"Excluded restow",probable:"Probable",possible:"Possible"})[status]||status;}
+function valueOrDash(v){return v?escapeHtml(v):'<span class="muted-cell">—</span>';}
+function emptyRow(cols,msg){return`<tr><td colspan="${cols}" class="muted-cell">${escapeHtml(msg)}</td></tr>`;}
+function paginate(rows,page){const totalPages=Math.max(1,Math.ceil(rows.length/PAGE_SIZE)),current=Math.min(Math.max(1,page),totalPages),start=(current-1)*PAGE_SIZE;return{rows:rows.slice(start,start+PAGE_SIZE),total:rows.length,totalPages,current,start};}
+function renderPagination(container,page,onChange){container.replaceChildren();const s=document.createElement("span");s.textContent=`${page.total?page.start+1:0}–${Math.min(page.start+PAGE_SIZE,page.total)} of ${page.total}`;const prev=document.createElement("button"),next=document.createElement("button");prev.textContent="‹";next.textContent="›";prev.disabled=page.current<=1;next.disabled=page.current>=page.totalPages;prev.onclick=()=>onChange(page.current-1);next.onclick=()=>onChange(page.current+1);container.append(s,prev,next);}
+function renderTrendChart(container,points,valueAccessor,formatter,percentScale=false){const p=points.slice(-30);if(!p.length){container.innerHTML=emptyMini("No saved cycles match the filters.");return;}const width=760,height=250,left=48,right=18,top=18,bottom=42,pw=width-left-right,ph=height-top-bottom,values=p.map(valueAccessor),observed=Math.max(1,...values),maximum=percentScale?100:Math.ceil(observed/10)*10,x=i=>p.length===1?left+pw/2:left+(i/(p.length-1))*pw,y=v=>top+ph-(Math.max(0,v)/maximum)*ph;const grid=[0,.25,.5,.75,1].map(r=>{const yy=top+ph-r*ph;return`<line class="trend-grid-line" x1="${left}" y1="${yy}" x2="${width-right}" y2="${yy}"></line><text class="trend-axis-label" x="${left-8}" y="${yy+4}" text-anchor="end">${formatter(maximum*r)}</text>`}).join("");const line=p.map((pt,i)=>`${x(i)},${y(valueAccessor(pt))}`).join(" ");const dots=p.map((pt,i)=>`<circle class="trend-dot" cx="${x(i)}" cy="${y(valueAccessor(pt))}" r="4"><title>${escapeHtml(`${formatDate(pt.planningDate)} · ${pt.planner} · ${pt.vesselName}: ${formatter(valueAccessor(pt))}`)}</title></circle>`).join("");container.innerHTML=`<svg class="trend-chart" viewBox="0 0 ${width} ${height}">${grid}<polyline class="trend-line" points="${line}"></polyline>${dots}</svg><p class="trend-note">Latest ${p.length} filtered cycles. Hover points for exact values.</p>`;}
+function filterSummary(){return `${state.globalFilters.terminal==="all"?"All terminals":state.globalFilters.terminal} · ${state.globalFilters.planner==="all"?"All planners":state.globalFilters.planner} · ${state.globalFilters.vessel==="all"?"All vessels":state.globalFilters.vessel}`;}
+function vesselIdentityLocal(records,fallback){const counts=a=>{const m=new Map();records.forEach(r=>{const v=cleanText(r[a]);if(v)m.set(v,(m.get(v)||0)+1)});return[...m.entries()].sort((x,y)=>y[1]-x[1]);};const visits=counts("outboundCarrier"),names=counts("outboundCarrierName");return{visit:visits[0]?.[0]||"Unknown visit",name:names[0]?.[0]||fallback||"Unknown vessel",multipleVisits:visits.length>1};}
+function fileStem(v){return cleanText(v).replace(/\.[^.]+$/,"").replace(/[_-]+/g," ").trim();}
+function safeName(v){return cleanText(v).replace(/[^A-Za-z0-9_-]+/g,"-").replace(/^-|-$/g,"")||"control-tower";}
+function formatNumber(v){return new Intl.NumberFormat("en-GB",{maximumFractionDigits:1}).format(Number(v)||0);}
+function formatPercent(v){return new Intl.NumberFormat("en-GB",{style:"percent",maximumFractionDigits:1}).format(Number(v)||0);}
+function formatBytes(b){return b<1024*1024?`${Math.max(1,Math.round(b/1024))} KB`:`${(b/1024/1024).toFixed(1)} MB`;}
+function formatDate(v){if(!v)return"Date unavailable";const d=new Date(String(v).length===10?`${v}T00:00:00`:v);return Number.isNaN(d.getTime())?cleanText(v):new Intl.DateTimeFormat("en-GB",{day:"2-digit",month:"short",year:"numeric"}).format(d);}
+function shortDate(v){if(!v)return"—";const d=new Date(`${v}T00:00:00`);return Number.isNaN(d.getTime())?cleanText(v):new Intl.DateTimeFormat("en-GB",{day:"2-digit",month:"short"}).format(d);}
+function formatDateTime(v){const d=new Date(v);return Number.isNaN(d.getTime())?"":new Intl.DateTimeFormat("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}).format(d);}
+function escapeHtml(v){return cleanText(v).replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[c]);}
+function nextFrame(){return new Promise(resolve=>requestAnimationFrame(()=>setTimeout(resolve,0)));}
+let toastTimer;function showToast(message){clearTimeout(toastTimer);el.toast.textContent=message;el.toast.classList.add("show");toastTimer=setTimeout(()=>el.toast.classList.remove("show"),3600);}
