@@ -5,10 +5,12 @@ import {
   analyzeYard,
   buildPlanningAnalysis,
   calculateWiRehandles,
+  compactHistoryRecord,
   normalizeWiRows,
   normalizeYardRows,
   parseDelimitedText,
   parseMoveTime,
+  restorePlannerMoves,
 } from "../dist/engine.js";
 
 test("parses quoted tab-delimited WI content", () => {
@@ -90,4 +92,36 @@ test("rehandle control counts same-POW blockers but separates cross-POW demand",
   assert.equal(result.count, 1);
   assert.equal(result.rows[0].targetUnit, "LOWR0000001");
   assert.ok(result.crossPowCount >= 1);
+});
+
+test("planning history preserves planner moves while removing source WI rows", () => {
+  const wi = normalizeWiRows([
+    { Kind:"LOAD", "Container No.":"LOAD0000001", Planner:"P1", Sts:"FCL", Length:"40" },
+    { Kind:"DSCH", "Container No.":"DISC0000002", Planner:"P2", Sts:"MTY", Length:"20" },
+  ]);
+  const analysis = buildPlanningAnalysis({
+    terminal:"MAMED",
+    planningDate:"2026-09-17",
+    vessels:[{ id:"v1", fileName:"v1.txt", wiRecords:wi, shortSteaming:false }],
+  });
+  const saved = compactHistoryRecord(analysis);
+  assert.equal(saved.planner.moves.length, 2);
+  assert.equal("wiRecords" in saved.vessels[0], false);
+});
+
+test("planner moves can be restored from an earlier compact history summary", () => {
+  const restored = restorePlannerMoves({
+    planner:{ totalMoves:3, moves:[] },
+    vessels:[{
+      id:"v1", name:"TEST VESSEL", visit:"VISIT1", shortSteaming:false,
+      plannerBreakdown:[
+        { planner:"P1", totalMoves:2, loads:1, discharges:1, full:1, empty:1, size20:1, size40:1, size45:0 },
+        { planner:"P2", totalMoves:1, loads:1, discharges:0, full:1, empty:0, size20:0, size40:0, size45:1 },
+      ],
+    }],
+  });
+  assert.equal(restored.length, 3);
+  assert.equal(restored.filter(move => move.planner === "P1").length, 2);
+  assert.equal(restored.filter(move => move.kind === "LOAD").length, 2);
+  assert.equal(restored.filter(move => move.length === "45").length, 1);
 });

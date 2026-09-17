@@ -5,6 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 const root=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const html=await readFile(resolve(root,"dist/index.html"),"utf8");
+const app=await readFile(resolve(root,"dist/app.js"),"utf8");
 test("all relative assets exist", async()=>{const refs=[...html.matchAll(/(?:src|href)="\.\/([^"?#]+)[^" ]*"/g)].map(m=>m[1]);await Promise.all(refs.map(r=>access(resolve(root,"dist",r))));});
 test("all navigation tabs have panels",()=>{const tabs=[...html.matchAll(/data-tab="([^"]+)"/g)].map(m=>m[1]);const panels=new Set([...html.matchAll(/data-panel="([^"]+)"/g)].map(m=>m[1]));tabs.forEach(t=>assert.ok(panels.has(t),`Missing ${t}`));});
 test("planning and yard uploads are separated",()=>{assert.match(html,/class="setup-card planning-upload"/);assert.match(html,/class="setup-card yard-upload"/);assert.match(html,/id="runPlanningButton"/);assert.match(html,/id="runYardButton"/);});
@@ -12,3 +13,4 @@ test("global terminal planner and vessel filters are always available",()=>{for(
 test("overview command center and yard intelligence subviews exist",()=>{assert.match(html,/data-panel="overview"/);for(const view of ["overview","aging","blocks","outbound","attention","containers"])assert.match(html,new RegExp(`data-yard-view="${view}"`));});
 test("NVV command view includes SS diagnostic banner and vessel ranking",()=>{assert.match(html,/id="nvvSsBanner"/);assert.match(html,/id="nvvVesselRanking"/);});
 test("history supports comparison and backup",()=>{for(const id of ["compareA","compareB","exportHistoryButton","importHistoryFile"])assert.match(html,new RegExp(`id="${id}"`));});
+test("opening planning history resets stale filters and opens planner performance",()=>{assert.match(app,/state\.globalFilters=\{terminal:record\.terminal\|\|"all",planner:"all",vessel:"all"\}/);assert.match(app,/activateTab\(record\.kind==="yard"\?"yard":"planner"\)/);});
