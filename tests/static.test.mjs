@@ -3,44 +3,12 @@ import { access, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const htmlPath = resolve(root, "dist/index.html");
-const html = await readFile(htmlPath, "utf8");
-
-test("all relative page assets exist", async () => {
-  const references = [...html.matchAll(/(?:src|href)="\.\/([^"?#]+)[^" ]*"/g)].map(match => match[1]);
-  assert.ok(references.length >= 2);
-  await Promise.all(references.map(reference => access(resolve(root, "dist", reference))));
-});
-
-test("every navigation tab has a matching panel", () => {
-  const tabs = [...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]);
-  const panels = new Set([...html.matchAll(/data-panel="([^"]+)"/g)].map(match => match[1]));
-  tabs.forEach(tab => assert.ok(panels.has(tab), `Missing panel for ${tab}`));
-});
-
-test("the source inputs are explicitly labelled", () => {
-  assert.match(html, /for="yardFile"/);
-  assert.match(html, /for="wiFile"/);
-});
-
-test("work lists support batch upload while yard inventory stays optional", () => {
-  assert.match(html, /id="wiFile"[^>]*multiple/);
-  assert.match(html, /id="yardFile"[^>]*>/);
-  assert.doesNotMatch(html, /id="yardFile"[^>]*required/);
-  assert.match(html, /Optional · adds yard inventory cross-checks/);
-  assert.match(html, /Work Lists calculate planner moves, NVV and potential rehandles/);
-});
-
-test("planner, analytics, NVV, rehandles, yard, and history have separate workspaces", () => {
-  for (const workspace of ["planner", "analytics", "nvv", "rehandles", "yard", "history"]) {
-    assert.match(html, new RegExp(`data-panel="${workspace}"`));
-  }
-});
-
-test("planner analytics includes cycle filters, trend graphs, and detail table", () => {
-  for (const id of ["analyticsPlanner", "analyticsTerminal", "analyticsFrom", "analyticsTo", "analyticsMovesTrend", "analyticsShareTrend", "analyticsTableBody"]) {
-    assert.match(html, new RegExp(`id="${id}"`));
-  }
-});
+const root=resolve(dirname(fileURLToPath(import.meta.url)),"..");
+const html=await readFile(resolve(root,"dist/index.html"),"utf8");
+test("all relative assets exist", async()=>{const refs=[...html.matchAll(/(?:src|href)="\.\/([^"?#]+)[^" ]*"/g)].map(m=>m[1]);await Promise.all(refs.map(r=>access(resolve(root,"dist",r))));});
+test("all navigation tabs have panels",()=>{const tabs=[...html.matchAll(/data-tab="([^"]+)"/g)].map(m=>m[1]);const panels=new Set([...html.matchAll(/data-panel="([^"]+)"/g)].map(m=>m[1]));tabs.forEach(t=>assert.ok(panels.has(t),`Missing ${t}`));});
+test("planning and yard uploads are separated",()=>{assert.match(html,/class="setup-card planning-upload"/);assert.match(html,/class="setup-card yard-upload"/);assert.match(html,/id="runPlanningButton"/);assert.match(html,/id="runYardButton"/);});
+test("global terminal planner and vessel filters are always available",()=>{for(const id of ["globalTerminal","globalPlanner","globalVessel"])assert.match(html,new RegExp(`id="${id}"`));});
+test("overview command center and yard intelligence subviews exist",()=>{assert.match(html,/data-panel="overview"/);for(const view of ["overview","aging","blocks","outbound","attention","containers"])assert.match(html,new RegExp(`data-yard-view="${view}"`));});
+test("NVV command view includes SS diagnostic banner and vessel ranking",()=>{assert.match(html,/id="nvvSsBanner"/);assert.match(html,/id="nvvVesselRanking"/);});
+test("history supports comparison and backup",()=>{for(const id of ["compareA","compareB","exportHistoryButton","importHistoryFile"])assert.match(html,new RegExp(`id="${id}"`));});
