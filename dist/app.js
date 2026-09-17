@@ -7,6 +7,7 @@ import {
   normalizeWiRows,
   normalizeYardRows,
   parseDelimitedText,
+  restorePlannerMoves,
   summarizeNvvRows,
 } from "./engine.js";
 
@@ -243,11 +244,41 @@ async function withHistoryStore(mode,callback){const db=await openHistoryDb();re
 function saveHistory(record){return withHistoryStore("readwrite",store=>store.put(record));}
 async function getHistory(){const db=await openHistoryDb();return new Promise((resolve,reject)=>{const tx=db.transaction("runs","readonly"),req=tx.objectStore("runs").getAll();req.onsuccess=()=>resolve(req.result.sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||"")));req.onerror=()=>reject(req.error);tx.oncomplete=()=>db.close();});}
 async function renderHistory(){try{state.historyRecords=(await getHistory()).map(upgradeHistoryRecord);renderGlobalFilters();renderHistoryTable();renderPlannerAnalytics();}catch(e){console.warn(e);state.historyRecords=[];}}
-function upgradeHistoryRecord(record){if(record?.kind)return record;if(record?.version>=2&&record.planner)return{...record,kind:record.yard?"batch":"planning"};if(record?.yard&&!record.planner)return{...record,kind:"yard"};return{...record,kind:"planning"};}
+function upgradeHistoryRecord(record){
+  let upgraded;
+  if(record?.kind) upgraded=record;
+  else if(record?.version>=2&&record.planner) upgraded={...record,kind:record.yard?"batch":"planning"};
+  else if(record?.yard&&!record.planner) upgraded={...record,kind:"yard"};
+  else upgraded={...record,kind:"planning"};
+  if((upgraded.kind==="planning"||upgraded.kind==="batch")&&upgraded.planner){
+    upgraded={...upgraded,planner:{...upgraded.planner,moves:restorePlannerMoves(upgraded)}};
+  }
+  return upgraded;
+}
 function recordMatchesFilters(record){if(state.globalFilters.terminal!=="all"&&record.terminal!==state.globalFilters.terminal)return false;if(record.kind==="yard")return true;const vessels=record.vessels||[];if(state.globalFilters.vessel!=="all"&&!vessels.some(v=>v.name===state.globalFilters.vessel))return false;if(state.globalFilters.planner!=="all"&&!vessels.some(v=>(v.plannerBreakdown||[]).some(p=>p.planner===state.globalFilters.planner)))return false;return true;}
 function renderHistoryTable(){const records=state.historyRecords.filter(recordMatchesFilters);const planning=records.filter(r=>r.kind==="planning"||r.kind==="batch"),yards=records.filter(r=>r.kind==="yard"||r.kind==="batch"&&r.yard);el.historySummary.innerHTML=renderKpis([{label:"Saved records",value:records.length,note:"This browser",tone:"neutral"},{label:"Planning",value:planning.length,note:"Batches",tone:"teal"},{label:"Yard",value:yards.length,note:"Snapshots",tone:"blue"},{label:"Vessels",value:planning.reduce((s,r)=>s+(r.vessels?.length||0),0),note:"Saved scope",tone:"neutral"},{label:"SS vessels",value:planning.reduce((s,r)=>s+(r.vessels||[]).filter(v=>v.shortSteaming).length,0),note:"Manual selections",tone:"warning"}]);el.historyEmpty.hidden=records.length>0;el.historyTableBody.innerHTML=records.map(r=>historyRow(r)).join("");const options=records.map(r=>[r.id,`${formatDate(r.planningDate)} · ${r.terminal} · ${r.kind}`]);setSelectOptions(el.compareA,[["","Select record A"],...options],el.compareA.value);setSelectOptions(el.compareB,[["","Select record B"],...options],el.compareB.value);}
 function historyRow(r){const planning=r.kind==="planning"||r.kind==="batch";const yard=r.kind==="yard"||(r.kind==="batch"&&r.yard);let scope,headline;if(planning){scope=`${r.vessels?.length||0} vessels`;headline=`${formatNumber(r.planner?.totalMoves||0)} moves · ${formatPercent(r.nvv?.accuracyRate||0)} NVV`;}else if(yard){scope=`${formatNumber(r.yard?.total||0)} units`;headline=`${formatNumber(r.yard?.aged15||0)} aged 15+ · avg ${formatNumber(r.yard?.averageDwell)} d`;}return`<tr><td>${formatDate(r.planningDate)}</td><td><span class="status-badge">${escapeHtml(r.kind||"analysis")}</span></td><td><strong>${escapeHtml(r.terminal||"")}</strong></td><td>${escapeHtml(scope||"")}</td><td>${escapeHtml(headline||"")}</td><td>${formatDateTime(r.createdAt)}</td><td><button class="text-button" data-history-action="view" data-history-id="${r.id}">View</button><button class="text-button danger-text" data-history-action="delete" data-history-id="${r.id}">Delete</button></td></tr>`;}
-async function handleHistoryAction(event){const b=event.target.closest("button[data-history-action]");if(!b)return;const record=state.historyRecords.find(r=>r.id===b.dataset.historyId);if(!record)return;if(b.dataset.historyAction==="view"){if(record.kind==="yard")state.currentYard=record;else{state.currentPlanning=record;if(record.kind==="batch"&&record.yard)state.currentYard={kind:"yard",terminal:record.terminal,planningDate:record.planningDate,createdAt:record.createdAt,sourceFiles:record.sourceFiles,yard:record.yard,quality:record.yardQuality||{}};}syncGlobalFilterDefaults(record.terminal);renderAll();activateTab(record.kind==="yard"?"yard":"overview");showToast("Saved analysis loaded.");}else if(confirm("Delete this saved analysis?")){await withHistoryStore("readwrite",store=>store.delete(record.id));await renderHistory();renderAll();}}
+async function handleHistoryAction(event){
+  const b=event.target.closest("button[data-history-action]");if(!b)return;
+  const record=state.historyRecords.find(r=>r.id===b.dataset.historyId);if(!record)return;
+  if(b.dataset.historyAction==="view"){
+    if(record.kind==="yard"){
+      state.currentYard=record;
+    }else{
+      state.currentPlanning=record;
+      state.currentYard=record.kind==="batch"&&record.yard
+        ? {kind:"yard",terminal:record.terminal,planningDate:record.planningDate,createdAt:record.createdAt,sourceFiles:record.sourceFiles,yard:record.yard,quality:record.yardQuality||{}}
+        : null;
+    }
+    state.globalFilters={terminal:record.terminal||"all",planner:"all",vessel:"all"};
+    state.nvvPage=1;state.rehandlePage=1;state.yardPage=1;
+    renderAll();
+    activateTab(record.kind==="yard"?"yard":"planner");
+    showToast(record.kind==="yard"?"Saved yard snapshot loaded.":"Saved planner performance loaded.");
+  }else if(confirm("Delete this saved analysis?")){
+    await withHistoryStore("readwrite",store=>store.delete(record.id));await renderHistory();renderAll();
+  }
+}
 async function clearHistory(){if(!confirm("Delete all locally saved analyses?"))return;await withHistoryStore("readwrite",store=>store.clear());await renderHistory();renderAll();showToast("History cleared.");}
 function exportHistory(){const blob=new Blob([JSON.stringify(state.historyRecords,null,2)],{type:"application/json"});downloadBlob(blob,`planning-excellence-history-${new Date().toISOString().slice(0,10)}.json`);}
 async function importHistory(file){if(!file)return;try{const data=JSON.parse(await file.text());if(!Array.isArray(data))throw new Error("History file must contain an array.");for(const record of data){if(record?.id)await saveHistory(record);}await renderHistory();renderAll();showToast(`${data.length} history records imported.`);}catch(e){showToast(e.message||"History import failed.");}finally{el.importHistoryFile.value="";}}

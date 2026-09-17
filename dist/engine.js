@@ -666,10 +666,47 @@ export function compactHistoryRecord(analysis) {
   const copy = JSON.parse(JSON.stringify(analysis));
   if (copy.kind === "planning" || copy.kind === "batch") {
     (copy.vessels || []).forEach(vessel => { delete vessel.wiRecords; });
-    if (copy.planner) delete copy.planner.moves;
   }
   if (copy.kind === "yard" && copy.yard?.rows?.length > 25000) copy.yard.rows = copy.yard.rows.slice(0, 25000);
   return copy;
+}
+
+export function restorePlannerMoves(analysis) {
+  const savedMoves = analysis?.planner?.moves;
+  if (Array.isArray(savedMoves) && (savedMoves.length || !analysis?.planner?.totalMoves)) return savedMoves;
+
+  const vessels = Array.isArray(analysis?.vessels) && analysis.vessels.length
+    ? analysis.vessels
+    : (analysis?.planner?.vesselRows || []);
+
+  return vessels.flatMap((vessel, vesselIndex) => {
+    const breakdown = Array.isArray(vessel.plannerBreakdown) && vessel.plannerBreakdown.length
+      ? vessel.plannerBreakdown
+      : (vessels.length === 1 ? analysis?.planner?.planners || [] : []);
+
+    return breakdown.flatMap(row => {
+      const total = Math.max(0, Number(row.totalMoves) || 0);
+      const loads = Math.max(0, Math.min(total, Number(row.loads) || 0));
+      const discharges = Math.max(0, Math.min(total - loads, Number(row.discharges) || 0));
+      const empty = Math.max(0, Math.min(total, Number(row.empty) || 0));
+      const size20 = Math.max(0, Math.min(total, Number(row.size20) || 0));
+      const size40 = Math.max(0, Math.min(total - size20, Number(row.size40) || 0));
+      const size45 = Math.max(0, Math.min(total - size20 - size40, Number(row.size45) || 0));
+
+      return Array.from({ length: total }, (_, moveIndex) => ({
+        unit: `history-${vessel.id || vesselIndex + 1}-${row.planner || "unassigned"}-${moveIndex + 1}`,
+        kind: moveIndex < loads ? "LOAD" : moveIndex < loads + discharges ? "DSCH" : "",
+        planner: row.planner || "Unassigned",
+        freightKind: moveIndex < empty ? "MTY" : "FCL",
+        length: moveIndex < size20 ? "20" : moveIndex < size20 + size40 ? "40" : moveIndex < size20 + size40 + size45 ? "45" : "",
+        vesselId: vessel.id || `vessel-${vesselIndex + 1}`,
+        vesselName: vessel.name || "Unknown vessel",
+        vesselVisit: vessel.visit || "Unknown visit",
+        shortSteaming: Boolean(vessel.shortSteaming),
+        restoredFromSummary: true,
+      }));
+    });
+  });
 }
 
 function daysBetween(dateA, dateB) {
