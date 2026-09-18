@@ -3,15 +3,50 @@ import test from "node:test";
 import {
   analyzeWiNvv,
   analyzeYard,
+  buildBatchAnalysis,
   buildPlanningAnalysis,
   calculateWiRehandles,
   compactHistoryRecord,
+  isPlannerPerformanceOnly,
   normalizeWiRows,
   normalizeYardRows,
   parseDelimitedText,
   parseMoveTime,
   restorePlannerMoves,
 } from "../dist/engine.js";
+
+test("planner performance export is isolated from NVV and rehandle controls", () => {
+  const raw = [
+    { Carrier:"L4B633S", "Carrier Name":"CMA CGM LISA MARIE", "Move Kind":"Discharge", "Conatiner Number":"DISC0000001", Length:"20", Planner:"P1", "Freight Kind":"FCL", "Move To":"EC", "Move From":"451774" },
+    { Carrier:"L4B633S", "Carrier Name":"CMA CGM LISA MARIE", "Move Kind":"Load", "Conatiner Number":"LOAD0000002", Length:"40", Planner:"P2", "Freight Kind":"MTY", "Move To":"451774", "Move From":"EC" },
+  ];
+  assert.equal(isPlannerPerformanceOnly(raw), true);
+  const result = buildPlanningAnalysis({
+    terminal:"MAMED",
+    planningDate:"2026-09-18",
+    vessels:[{ id:"v1", fileName:"planner.txt", wiRecords:normalizeWiRows(raw), plannerOnly:true, shortSteaming:false }],
+  });
+  assert.equal(result.planner.totalMoves, 2);
+  assert.equal(result.planner.totalLoads, 1);
+  assert.equal(result.planner.totalDischarges, 1);
+  assert.equal(result.planner.planners.length, 2);
+  assert.equal(result.vessels[0].name, "CMA CGM LISA MARIE");
+  assert.equal(result.vessels[0].visit, "L4B633S");
+  assert.equal(result.vessels[0].plannerOnly, true);
+  assert.equal(result.nvv.rows.length, 0);
+  assert.equal(result.nvv.eligibleVesselCount, 0);
+  assert.equal(result.nvv.excludedPlannerOnlyVessels, 1);
+  assert.equal(result.rehandles.count, 0);
+  assert.equal(result.rehandles.crossPowCount, 0);
+
+  const batch = buildBatchAnalysis({
+    terminal:"MAMED",
+    planningDate:"2026-09-18",
+    vessels:[{ id:"v1", fileName:"planner.txt", wiRecords:normalizeWiRows(raw), plannerOnly:true, shortSteaming:false }],
+    yardRecords:[{ unit:"LOAD0000002", outboundVisit:"OTHER", position:"1A1001" }],
+  });
+  assert.equal(batch.yardConnection.totalLoads, 0);
+});
 
 test("parses quoted tab-delimited WI content", () => {
   const rows = parseDelimitedText('Kind\tContainer No.\tPlanner\r\nLOAD\t"AAAA0000001"\tDEL055\r\n');

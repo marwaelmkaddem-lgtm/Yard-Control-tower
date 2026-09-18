@@ -5,6 +5,7 @@ Static GitHub Pages control tower for vessel planning performance, WI-based NVV/
 ## V4 scope
 
 - Separate Vessel Work List and Yard Inventory analysis paths.
+- EasyOps-style planner performance exports are supported for Planner Performance only. They are explicitly excluded from NVV, rehandle, yard and data-accuracy controls.
 - Global Terminal / Planner / Vessel filters remain visible across every workspace.
 - Overview command center with planning, NVV, rehandle, yard, and attention summaries.
 - Manual Short Steaming Yes/No by vessel. SS is diagnostic only and excluded from combined NVV KPI numerator/denominator.

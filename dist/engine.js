@@ -20,25 +20,25 @@ const YARD_ALIASES = {
 
 const WI_ALIASES = {
   outboundCarrier: ["outbound carrier", "outbound visit", "carrier"],
-  outboundCarrierName: ["outbound carrier name", "vessel name"],
+  outboundCarrierName: ["outbound carrier name", "vessel name", "carrier name"],
   kind: ["kind", "move kind"],
-  unit: ["container no.", "container no", "container number", "unit nbr", "unit no"],
+  unit: ["container no.", "container no", "container number", "conatiner number", "unit nbr", "unit no"],
   length: ["len", "length", "size"],
   moveStage: ["move stage", "stage"],
   currentPosition: ["current position", "yard position", "position"],
-  outboundPosition: ["outbound position", "vessel position"],
+  outboundPosition: ["outbound position", "vessel position", "planned position"],
   queue: ["queue"],
   sequence: ["sequence", "seq"],
   moveTime: ["move time", "planned move time"],
-  pow: ["p.o.w.", "pow", "point of work"],
+  pow: ["p.o.w.", "pow", "point of work", "pow name"],
   planner: ["planner"],
-  weight: ["wt tns", "weight", "weight tns"],
-  pod: ["pod", "port of discharge"],
+  weight: ["wt tns", "weight", "weight tns", "unit weight (kg)"],
+  pod: ["pod", "port of discharge", "unit pod"],
   freightKind: ["sts", "status", "freight kind"],
   category: ["cat", "category"],
   lineOp: ["line", "line op", "line operator"],
   typeIso: ["type iso", "iso", "iso type", "equipment type"],
-  specialStow: ["special stow", "special handling", "handling instruction", "special instructions"],
+  specialStow: ["special stow", "unit is special stow?", "special handling", "handling instruction", "special instructions"],
 };
 
 export function normalizeHeader(value) {
@@ -49,6 +49,18 @@ export function cleanText(value) {
   if (value === null || value === undefined) return "";
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
   return String(value).trim();
+}
+
+export function isPlannerPerformanceOnly(rawRows) {
+  const headers = new Set(Object.keys(rawRows?.[0] || {}).map(normalizeHeader));
+  const hasContainer = headers.has("container number") || headers.has("conatiner number");
+  return headers.has("carrier")
+    && headers.has("carrier name")
+    && headers.has("move kind")
+    && hasContainer
+    && headers.has("move to")
+    && headers.has("move from")
+    && !headers.has("outbound carrier");
 }
 
 export function canonicalContainer(value) {
@@ -78,6 +90,13 @@ function toNumber(value) {
 function titleCase(value) {
   const text = cleanText(value).toLowerCase();
   return text ? text.replace(/\b\w/g, letter => letter.toUpperCase()) : "Unspecified";
+}
+
+function normalizeMoveKind(value) {
+  const kind = cleanText(value).toUpperCase();
+  if (["DISCHARGE", "DISCH", "DISCHARGING"].includes(kind)) return "DSCH";
+  if (["LOAD", "LOADING"].includes(kind)) return "LOAD";
+  return kind;
 }
 
 export function normalizeYardRows(rawRows) {
@@ -112,7 +131,7 @@ export function normalizeWiRows(rawRows) {
   (rawRows || []).forEach((raw, index) => {
     const lookup = makeLookup(raw);
     const unit = canonicalContainer(readAlias(lookup, WI_ALIASES.unit));
-    const kind = cleanText(readAlias(lookup, WI_ALIASES.kind)).toUpperCase();
+    const kind = normalizeMoveKind(readAlias(lookup, WI_ALIASES.kind));
     if (!unit && !kind) return;
     records.push({
       index,
@@ -558,7 +577,7 @@ export function analyzePlannerMoves(vessels) {
     const identity = vesselIdentity(moves, cleanText(vessel.fallbackName || vessel.fileName).replace(/\.[^.]+$/, "") || `Vessel ${index + 1}`);
     return {
       id: vessel.id || `vessel-${index + 1}`, fileName: vessel.fileName || "Work List", name: identity.name, visit: identity.visit,
-      multipleVisits: identity.multipleVisits, shortSteaming: Boolean(vessel.shortSteaming), totalMoves: moves.length,
+      multipleVisits: identity.multipleVisits, shortSteaming: Boolean(vessel.shortSteaming), plannerOnly: Boolean(vessel.plannerOnly), totalMoves: moves.length,
       loads: moves.filter(record => record.kind === "LOAD").length, discharges: moves.filter(record => record.kind === "DSCH").length,
       plannerBreakdown: summarizePlannerMoves(moves), moves,
     };
@@ -596,8 +615,9 @@ function summarizePlannerMoves(moves) {
 }
 
 function aggregateNvv(vessels) {
-  const eligibleVessels = vessels.filter(vessel => !vessel.shortSteaming);
-  const excludedVessels = vessels.filter(vessel => vessel.shortSteaming);
+  const plannerOnlyVessels = vessels.filter(vessel => vessel.plannerOnly);
+  const eligibleVessels = vessels.filter(vessel => !vessel.shortSteaming && !vessel.plannerOnly);
+  const excludedVessels = vessels.filter(vessel => vessel.shortSteaming && !vessel.plannerOnly);
   const eligibleRows = eligibleVessels.flatMap(vessel => (vessel.nvv?.rows || []).map(row => ({ ...row, vesselId: vessel.id, vesselName: vessel.name, vesselVisit: vessel.visit, shortSteaming: false })));
   const allRows = vessels.flatMap(vessel => (vessel.nvv?.rows || []).map(row => ({ ...row, vesselId: vessel.id, vesselName: vessel.name, vesselVisit: vessel.visit, shortSteaming: vessel.shortSteaming })));
   const summary = summarizeNvvRows(eligibleRows, eligibleVessels.reduce((sum, vessel) => sum + (vessel.nvv?.totalDischarges || 0), 0));
@@ -606,6 +626,7 @@ function aggregateNvv(vessels) {
     rows: allRows,
     eligibleRows,
     eligibleVesselCount: eligibleVessels.length,
+    excludedPlannerOnlyVessels: plannerOnlyVessels.length,
     excludedShortSteamingVessels: excludedVessels.length,
     excludedShortSteamingFcl: excludedVessels.reduce((sum, vessel) => sum + (vessel.nvv?.eligibleFcl || 0), 0),
   };
@@ -622,7 +643,12 @@ export function buildPlanningAnalysis({ vessels, terminal, planningDate, sourceF
   const planner = analyzePlannerMoves(inputVessels);
   const vesselResults = inputVessels.map((vessel, index) => {
     const plannerVessel = planner.vesselRows.find(item => item.id === (vessel.id || `vessel-${index + 1}`));
-    return { ...plannerVessel, nvv: analyzeWiNvv(vessel.wiRecords, terminal), rehandles: calculateWiRehandles(vessel.wiRecords), wiRecords: vessel.wiRecords };
+    return {
+      ...plannerVessel,
+      nvv: vessel.plannerOnly ? null : analyzeWiNvv(vessel.wiRecords, terminal),
+      rehandles: vessel.plannerOnly ? null : calculateWiRehandles(vessel.wiRecords),
+      wiRecords: vessel.wiRecords,
+    };
   });
   return {
     version: 4, kind: "planning", id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -651,7 +677,7 @@ export function buildBatchAnalysis({ vessels, yardRecords, terminal, planningDat
   const yardSnapshot = yardAvailable ? buildYardSnapshot({ yardRecords, terminal, planningDate, sourceFiles }) : null;
   let yardConnection = null;
   if (yardAvailable) {
-    const rows = planning.vessels.flatMap(vessel => crossCheckNvv(yardRecords, vessel.wiRecords || []).rows.map(row => ({ ...row, vesselId: vessel.id, vesselName: vessel.name, vesselVisit: vessel.visit, shortSteaming: vessel.shortSteaming })));
+    const rows = planning.vessels.filter(vessel => !vessel.plannerOnly).flatMap(vessel => crossCheckNvv(yardRecords, vessel.wiRecords || []).rows.map(row => ({ ...row, vesselId: vessel.id, vesselName: vessel.name, vesselVisit: vessel.visit, shortSteaming: vessel.shortSteaming })));
     const found = rows.filter(r => r.status !== "not-yard").length;
     yardConnection = { rows, totalLoads: rows.length, found, matched: rows.filter(r => r.status === "match").length, wrong: rows.filter(r => r.status === "wrong").length, missing: rows.filter(r => r.status === "missing").length, notInYard: rows.filter(r => r.status === "not-yard").length, positionMismatch: rows.filter(r => r.positionStatus === "mismatch").length, matchRate: found ? rows.filter(r => r.status === "match").length / found : 0, coverageRate: rows.length ? found / rows.length : 0 };
   }
