@@ -13,6 +13,7 @@ import {
 
 const TERMINALS = ["MAMED","MAPTM","OMSLL","SCCT","HRRJK","NGAPP","BHKBS","LRMLW","DKAAR","ITVAD","JOAQJ","NGONN","SEGOT"];
 const PAGE_SIZE = 50;
+const COLLAPSED_SECTIONS_KEY = "planning-excellence-collapsed-sections";
 const state = {
   wiFiles: [], preparedVessels: [], yardFile: null, currentPlanning: null, currentYard: null,
   historyRecords: [], loadingPlanning: false, loadingYard: false,
@@ -22,6 +23,7 @@ const state = {
 
 const ids = [
   "themeToggle","themeIcon","themeLabel","globalTerminal","globalPlanner","globalVessel","clearGlobalFilters",
+  "openAllSections","closeAllSections",
   "terminalSelect","planningDate","wiFile","wiDrop","wiFileName","wiState","runPlanningButton","planningStatus","planningSetupStatus","vesselSetup","vesselSetupCount","vesselSetupList",
   "yardTerminalSelect","yardDate","yardFile","yardDrop","yardFileName","yardState","runYardButton","yardStatus","yardSetupStatus",
   "overviewEmpty","overviewContent","overviewTitle","overviewMeta","overviewScope","overviewNvv","overviewRehandles","overviewYard","attentionList","executiveReportButton","detailedReportButton",
@@ -45,6 +47,7 @@ async function initialize() {
   const savedTerminal = localStorage.getItem("planning-excellence-terminal");
   if (TERMINALS.includes(savedTerminal)) { el.terminalSelect.value = savedTerminal; el.yardTerminalSelect.value = savedTerminal; }
   bindEvents();
+  initializeCollapsibleSections();
   updateRunStates();
   await renderHistory();
   renderAll();
@@ -65,6 +68,8 @@ function bindEvents() {
   document.querySelectorAll(".tab-button").forEach(button => button.addEventListener("click", () => activateTab(button.dataset.tab)));
   [el.globalTerminal, el.globalPlanner, el.globalVessel].forEach(control => control.addEventListener("change", handleGlobalFilterChange));
   el.clearGlobalFilters.addEventListener("click", () => { state.globalFilters = { terminal:"all", planner:"all", vessel:"all" }; renderGlobalFilters(); renderAll(); });
+  el.openAllSections.addEventListener("click", () => setAllSectionsCollapsed(false));
+  el.closeAllSections.addEventListener("click", () => setAllSectionsCollapsed(true));
   [el.nvvSearch, el.nvvStatusFilter].forEach(control => control.addEventListener(control.tagName === "INPUT" ? "input" : "change", () => { state.nvvPage = 1; renderNvv(); }));
   [el.rehandleSearch, el.rehandleStatusFilter].forEach(control => control.addEventListener(control.tagName === "INPUT" ? "input" : "change", () => { state.rehandlePage = 1; renderRehandles(); }));
   [el.yardSearch, el.yardDwellFilter].forEach(control => control.addEventListener(control.tagName === "INPUT" ? "input" : "change", () => { state.yardPage = 1; renderYardContainerExplorer(); }));
@@ -82,6 +87,74 @@ function bindEvents() {
   el.compareButton.addEventListener("click", renderComparison);
   el.historyTableBody.addEventListener("click", handleHistoryAction);
   el.clearHistoryButton.addEventListener("click", clearHistory);
+}
+
+function initializeCollapsibleSections() {
+  const collapsedKeys = readCollapsedSectionKeys();
+  const sections = [...document.querySelectorAll(".setup-card, .content-card")];
+  sections.forEach((section, index) => {
+    const header = section.querySelector(":scope > .section-heading, :scope > .card-heading, :scope > .table-toolbar");
+    if (!header || section.dataset.collapsibleReady === "true") return;
+
+    const title = cleanText(header.querySelector("h2, h3")?.textContent) || `Section ${index + 1}`;
+    const panel = section.closest("[data-panel]")?.dataset.panel || "inputs";
+    const key = `${panel}:${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}:${index}`;
+    const body = document.createElement("div");
+    const bodyId = `collapsible-section-${index + 1}`;
+    body.id = bodyId;
+    body.className = "collapsible-section-body";
+    [...section.children].filter(child => child !== header).forEach(child => body.append(child));
+    section.append(body);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "section-toggle-button";
+    button.setAttribute("aria-controls", bodyId);
+    button.setAttribute("aria-label", `Close ${title}`);
+    button.innerHTML = '<span class="section-toggle-text">Close section</span><span class="section-toggle-icon" aria-hidden="true">⌃</span>';
+    button.addEventListener("click", () => setSectionCollapsed(section, !section.classList.contains("is-collapsed")));
+    header.append(button);
+
+    section.dataset.collapsibleReady = "true";
+    section.dataset.collapseKey = key;
+    section.dataset.collapseTitle = title;
+    setSectionCollapsed(section, collapsedKeys.has(key), false);
+  });
+}
+
+function setSectionCollapsed(section, collapsed, persist = true) {
+  const body = section.querySelector(":scope > .collapsible-section-body");
+  const button = section.querySelector(":scope > .section-heading > .section-toggle-button, :scope > .card-heading > .section-toggle-button, :scope > .table-toolbar > .section-toggle-button");
+  if (!body || !button) return;
+  body.hidden = collapsed;
+  section.classList.toggle("is-collapsed", collapsed);
+  button.setAttribute("aria-expanded", String(!collapsed));
+  button.setAttribute("aria-label", `${collapsed ? "Open" : "Close"} ${section.dataset.collapseTitle || "section"}`);
+  button.querySelector(".section-toggle-text").textContent = collapsed ? "Open section" : "Close section";
+  button.querySelector(".section-toggle-icon").textContent = collapsed ? "⌄" : "⌃";
+  if (persist) saveCollapsedSectionKeys();
+}
+
+function setAllSectionsCollapsed(collapsed) {
+  document.querySelectorAll("[data-collapsible-ready='true']").forEach(section => setSectionCollapsed(section, collapsed, false));
+  saveCollapsedSectionKeys();
+  showToast(collapsed ? "All detail sections closed." : "All detail sections opened.");
+}
+
+function readCollapsedSectionKeys() {
+  try {
+    const value = JSON.parse(localStorage.getItem(COLLAPSED_SECTIONS_KEY) || "[]");
+    return new Set(Array.isArray(value) ? value : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedSectionKeys() {
+  const keys = [...document.querySelectorAll("[data-collapsible-ready='true'].is-collapsed")]
+    .map(section => section.dataset.collapseKey)
+    .filter(Boolean);
+  try { localStorage.setItem(COLLAPSED_SECTIONS_KEY, JSON.stringify(keys)); } catch {}
 }
 
 function applyTheme(theme) {
